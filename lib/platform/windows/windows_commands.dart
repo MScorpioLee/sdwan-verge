@@ -23,20 +23,19 @@ class WindowsCommand {
 }
 
 class WindowsCommands {
-  static WindowsCommand adminCheck() => const WindowsCommand('net', ['session']);
+  static WindowsCommand adminCheck() =>
+      const WindowsCommand('net', ['session']);
 
   static WindowsCommand routePrint() =>
       const WindowsCommand('route', ['print', '-4']);
 
-  static WindowsCommand netshConfig() => const WindowsCommand(
-        'netsh',
-        ['interface', 'ip', 'show', 'config'],
-      );
+  static WindowsCommand netshConfig() =>
+      const WindowsCommand('netsh', ['interface', 'ip', 'show', 'config']);
 
   static WindowsCommand dnsServers(String interfaceName) => WindowsCommand(
-        'netsh',
-        ['interface', 'ip', 'show', 'dnsservers', interfaceName],
-      );
+    'netsh',
+    ['interface', 'ip', 'show', 'dnsservers', interfaceName],
+  );
 
   static WindowsCommand relaunchAsAdmin(String executablePath) {
     final escaped = executablePath.replaceAll('"', r'\"');
@@ -50,55 +49,54 @@ class WindowsCommands {
   }
 
   static List<WindowsCommand> enableAcceleration(SdwanProfile profile) => [
-        WindowsCommand('route', ['add', '0.0.0.0/1', profile.cpeIp, '-p']),
-        WindowsCommand('route', ['add', '128.0.0.0/1', profile.cpeIp, '-p']),
-        const WindowsCommand('ipconfig', ['/flushdns']),
-      ];
+    WindowsCommand('route', ['add', '0.0.0.0/1', profile.cpeIp, '-p']),
+    WindowsCommand('route', ['add', '128.0.0.0/1', profile.cpeIp, '-p']),
+    const WindowsCommand('ipconfig', ['/flushdns']),
+  ];
 
   static List<WindowsCommand> disableAcceleration() => const [
-        WindowsCommand('route', ['delete', '0.0.0.0/1']),
-        WindowsCommand('route', ['delete', '128.0.0.0/1']),
-        WindowsCommand('ipconfig', ['/flushdns']),
-      ];
+    WindowsCommand('route', ['delete', '0.0.0.0/1']),
+    WindowsCommand('route', ['delete', '128.0.0.0/1']),
+    WindowsCommand('ipconfig', ['/flushdns']),
+  ];
 
   static List<WindowsCommand> setDns(
     String interfaceName,
     SdwanProfile profile,
-  ) =>
-      [
-        WindowsCommand('netsh', [
-          'interface',
-          'ip',
-          'set',
-          'dnsserver',
-          interfaceName,
-          'static',
-          profile.primaryDns,
-          'primary',
-        ]),
-        WindowsCommand('netsh', [
-          'interface',
-          'ip',
-          'add',
-          'dnsserver',
-          interfaceName,
-          profile.secondaryDns,
-          'index=2',
-        ]),
-        const WindowsCommand('ipconfig', ['/flushdns']),
-      ];
+  ) => [
+    WindowsCommand('netsh', [
+      'interface',
+      'ip',
+      'set',
+      'dnsserver',
+      interfaceName,
+      'static',
+      profile.primaryDns,
+      'primary',
+    ]),
+    WindowsCommand('netsh', [
+      'interface',
+      'ip',
+      'add',
+      'dnsserver',
+      interfaceName,
+      profile.secondaryDns,
+      'index=2',
+    ]),
+    const WindowsCommand('ipconfig', ['/flushdns']),
+  ];
 
   static List<WindowsCommand> restoreDns(String interfaceName) => [
-        WindowsCommand('netsh', [
-          'interface',
-          'ip',
-          'set',
-          'dnsserver',
-          interfaceName,
-          'dhcp',
-        ]),
-        const WindowsCommand('ipconfig', ['/flushdns']),
-      ];
+    WindowsCommand('netsh', [
+      'interface',
+      'ip',
+      'set',
+      'dnsserver',
+      interfaceName,
+      'dhcp',
+    ]),
+    const WindowsCommand('ipconfig', ['/flushdns']),
+  ];
 }
 
 bool _listEquals(List<String> left, List<String> right) {

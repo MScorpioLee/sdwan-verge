@@ -28,14 +28,14 @@ class FakeGateway implements NetworkPlatformGateway {
       const GatewayOperationResult(success: true, message: 'ok');
 
   @override
-  Future<GatewayOperationResult> enableAcceleration(SdwanProfile profile) async =>
-      const GatewayOperationResult(success: true, message: '开启成功');
+  Future<GatewayOperationResult> enableAcceleration(
+    SdwanProfile profile,
+  ) async => const GatewayOperationResult(success: true, message: '开启成功');
 
   @override
   Future<GatewayOperationResult> disableAcceleration(
     SdwanProfile profile,
-  ) async =>
-      const GatewayOperationResult(success: true, message: '关闭成功');
+  ) async => const GatewayOperationResult(success: true, message: '关闭成功');
 
   @override
   Future<GatewayOperationResult> setDns(SdwanProfile profile) async =>
@@ -66,7 +66,9 @@ void main() {
     );
     await controller.initialize();
 
-    await tester.pumpWidget(MaterialApp(home: AppShell(controller: controller)));
+    await tester.pumpWidget(
+      MaterialApp(home: AppShell(controller: controller)),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('国际网络加速工具'), findsOneWidget);

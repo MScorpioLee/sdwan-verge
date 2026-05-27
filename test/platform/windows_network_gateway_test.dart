@@ -47,8 +47,11 @@ void main() {
 
   test('readStatus combines route, interface, and DNS output', () async {
     final runner = FakeCommandRunner();
-    runner.responses['net session'] =
-        const CommandResult(exitCode: 0, stdout: '', stderr: '');
+    runner.responses['net session'] = const CommandResult(
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    );
     runner.responses['route print -4'] = const CommandResult(
       exitCode: 0,
       stderr: '',
@@ -69,14 +72,14 @@ Configuration for interface "Ethernet"
     );
     runner.responses['netsh interface ip show dnsservers Ethernet'] =
         const CommandResult(
-      exitCode: 0,
-      stderr: '',
-      stdout: '''
+          exitCode: 0,
+          stderr: '',
+          stdout: '''
 Configuration for interface "Ethernet"
     Statically Configured DNS Servers:    223.5.5.5
                                            114.114.114.114
 ''',
-    );
+        );
     final gateway = WindowsNetworkGateway(runner: runner);
 
     final status = await gateway.readStatus(SdwanProfile.defaults());
@@ -91,25 +94,30 @@ Configuration for interface "Ethernet"
     expect(status.dnsServers, ['223.5.5.5', '114.114.114.114']);
   });
 
-  test('ensureAdminOrRelaunch starts elevated copy and exits current process',
-      () async {
-    final runner = FakeCommandRunner();
-    runner.responses['net session'] =
-        const CommandResult(exitCode: 1, stdout: '', stderr: 'access denied');
-    var exitCode = -1;
-    final gateway = WindowsNetworkGateway(
-      runner: runner,
-      executablePath: 'C:\\app\\sdwan.exe',
-      exitProcess: (code) => exitCode = code,
-    );
+  test(
+    'ensureAdminOrRelaunch starts elevated copy and exits current process',
+    () async {
+      final runner = FakeCommandRunner();
+      runner.responses['net session'] = const CommandResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'access denied',
+      );
+      var exitCode = -1;
+      final gateway = WindowsNetworkGateway(
+        runner: runner,
+        executablePath: 'C:\\app\\sdwan.exe',
+        exitProcess: (code) => exitCode = code,
+      );
 
-    final result = await gateway.ensureAdminOrRelaunch();
+      final result = await gateway.ensureAdminOrRelaunch();
 
-    expect(result.success, isTrue);
-    expect(exitCode, 0);
-    expect(runner.calls, [
-      'net session',
-      'powershell -NoProfile -ExecutionPolicy Bypass -Command Start-Process -FilePath "C:\\app\\sdwan.exe" -Verb RunAs',
-    ]);
-  });
+      expect(result.success, isTrue);
+      expect(exitCode, 0);
+      expect(runner.calls, [
+        'net session',
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command Start-Process -FilePath "C:\\app\\sdwan.exe" -Verb RunAs',
+      ]);
+    },
+  );
 }

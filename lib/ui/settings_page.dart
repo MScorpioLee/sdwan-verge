@@ -74,10 +74,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ],
         ),
-        if (_message != null) ...[
-          const SizedBox(height: 12),
-          Text(_message!),
-        ],
+        if (_message != null) ...[const SizedBox(height: 12), Text(_message!)],
       ],
     );
   }

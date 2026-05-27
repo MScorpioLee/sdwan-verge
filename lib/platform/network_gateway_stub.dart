@@ -24,7 +24,9 @@ class UnsupportedNetworkGateway implements NetworkPlatformGateway {
   }
 
   @override
-  Future<GatewayOperationResult> enableAcceleration(SdwanProfile profile) async {
+  Future<GatewayOperationResult> enableAcceleration(
+    SdwanProfile profile,
+  ) async {
     return _unsupported('开启加速');
   }
 
@@ -46,7 +48,7 @@ class UnsupportedNetworkGateway implements NetworkPlatformGateway {
   }
 
   GatewayOperationResult _unsupported(String action) => GatewayOperationResult(
-        success: false,
-        message: '$platformName 暂不支持$action，请使用 Windows 客户端',
-      );
+    success: false,
+    message: '$platformName 暂不支持$action，请使用 Windows 客户端',
+  );
 }

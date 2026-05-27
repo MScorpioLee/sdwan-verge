@@ -26,15 +26,15 @@ class LogsPage extends StatelessWidget {
                   onPressed: logs.isEmpty
                       ? null
                       : () => Clipboard.setData(
-                            ClipboardData(
-                              text: logs
-                                  .map(
-                                    (log) =>
-                                        '${log.displayTime} ${log.action} ${log.success ? '成功' : '失败'} ${log.message}',
-                                  )
-                                  .join('\n'),
-                            ),
+                          ClipboardData(
+                            text: logs
+                                .map(
+                                  (log) =>
+                                      '${log.displayTime} ${log.action} ${log.success ? '成功' : '失败'} ${log.message}',
+                                )
+                                .join('\n'),
                           ),
+                        ),
                   icon: const Icon(Icons.copy),
                 ),
               ],
@@ -45,11 +45,13 @@ class LogsPage extends StatelessWidget {
               ListTile(
                 leading: Icon(log.success ? Icons.check_circle : Icons.error),
                 title: Text('${log.displayTime} ${log.action}'),
-                subtitle: Text([
-                  log.message,
-                  if (log.command != null) '命令：${log.command}',
-                  if (log.exitCode != null) '退出码：${log.exitCode}',
-                ].join('\n')),
+                subtitle: Text(
+                  [
+                    log.message,
+                    if (log.command != null) '命令：${log.command}',
+                    if (log.exitCode != null) '退出码：${log.exitCode}',
+                  ].join('\n'),
+                ),
               ),
           ],
         );

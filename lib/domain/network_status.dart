@@ -16,12 +16,12 @@ class NetworkStatus {
   });
 
   factory NetworkStatus.unsupported(String platformName) => NetworkStatus(
-        platformName: platformName,
-        capability: PlatformCapability.unsupported,
-        isAdmin: false,
-        accelerationEnabled: false,
-        message: '$platformName 暂不支持直接修改系统路由和 DNS',
-      );
+    platformName: platformName,
+    capability: PlatformCapability.unsupported,
+    isAdmin: false,
+    accelerationEnabled: false,
+    message: '$platformName 暂不支持直接修改系统路由和 DNS',
+  );
 
   final String platformName;
   final PlatformCapability capability;

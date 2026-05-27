@@ -30,8 +30,10 @@ class WindowsNetworkGateway implements NetworkPlatformGateway {
 
     if (interfaceIp != null) {
       final configResult = await _run(WindowsCommands.netshConfig());
-      interfaceName =
-          WindowsParsers.interfaceNameForIp(configResult.stdout, interfaceIp);
+      interfaceName = WindowsParsers.interfaceNameForIp(
+        configResult.stdout,
+        interfaceIp,
+      );
       if (interfaceName != null) {
         final dnsResult = await _run(WindowsCommands.dnsServers(interfaceName));
         final dns = WindowsParsers.dnsInfo(dnsResult.stdout);
@@ -44,8 +46,10 @@ class WindowsNetworkGateway implements NetworkPlatformGateway {
       platformName: 'Windows',
       capability: PlatformCapability.full,
       isAdmin: admin,
-      accelerationEnabled:
-          WindowsParsers.hasAccelerationRoutes(routeOutput, profile.cpeIp),
+      accelerationEnabled: WindowsParsers.hasAccelerationRoutes(
+        routeOutput,
+        profile.cpeIp,
+      ),
       activeInterfaceName: interfaceName,
       activeInterfaceIp: interfaceIp,
       dnsMode: dnsMode,
@@ -56,10 +60,7 @@ class WindowsNetworkGateway implements NetworkPlatformGateway {
   @override
   Future<GatewayOperationResult> ensureAdminOrRelaunch() async {
     if (await _isAdmin()) {
-      return const GatewayOperationResult(
-        success: true,
-        message: '管理员权限已就绪',
-      );
+      return const GatewayOperationResult(success: true, message: '管理员权限已就绪');
     }
     final path = executablePath;
     if (path == null || path.isEmpty) {

@@ -1,10 +1,7 @@
 import '../../domain/network_status.dart';
 
 class ParsedDnsInfo {
-  const ParsedDnsInfo({
-    required this.mode,
-    required this.servers,
-  });
+  const ParsedDnsInfo({required this.mode, required this.servers});
 
   final DnsMode mode;
   final List<String> servers;
@@ -51,8 +48,9 @@ class WindowsParsers {
     String? currentInterface;
     for (final rawLine in netshConfig.split('\n')) {
       final line = rawLine.trim();
-      final match =
-          RegExp(r'^Configuration for interface "?(.+?)"?$').firstMatch(line);
+      final match = RegExp(
+        r'^Configuration for interface "?(.+?)"?$',
+      ).firstMatch(line);
       if (match != null) {
         currentInterface = match.group(1);
         continue;

@@ -28,7 +28,9 @@ class FakeGateway implements NetworkPlatformGateway {
   }
 
   @override
-  Future<GatewayOperationResult> enableAcceleration(SdwanProfile profile) async {
+  Future<GatewayOperationResult> enableAcceleration(
+    SdwanProfile profile,
+  ) async {
     calls.add('enableAcceleration');
     return const GatewayOperationResult(success: true, message: 'enabled');
   }
@@ -85,8 +87,8 @@ void main() {
     store.config = AppConfig.defaults().copyWith(
       profiles: [
         AppConfig.defaults().activeProfile.copyWith(
-              syncDnsWithAcceleration: true,
-            ),
+          syncDnsWithAcceleration: true,
+        ),
       ],
     );
     final controller = SdwanController(gateway: gateway, configStore: store);

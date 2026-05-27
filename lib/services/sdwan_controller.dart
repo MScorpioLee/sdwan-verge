@@ -9,20 +9,14 @@ import '../platform/network_platform_gateway.dart';
 import 'config_repository.dart';
 
 class ControllerResult {
-  const ControllerResult({
-    required this.success,
-    required this.message,
-  });
+  const ControllerResult({required this.success, required this.message});
 
   final bool success;
   final String message;
 }
 
 class SdwanController extends ChangeNotifier {
-  SdwanController({
-    required this.gateway,
-    required this.configStore,
-  });
+  SdwanController({required this.gateway, required this.configStore});
 
   final NetworkPlatformGateway gateway;
   final ConfigStore configStore;
