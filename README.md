@@ -1,17 +1,32 @@
-# sdwan_client
+# SD-WAN Client
 
-A new Flutter project.
+Flutter multi-platform client for the SD-WAN acceleration workflow currently represented by the BAT script in this directory.
 
-## Getting Started
+## First Release Scope
 
-This project is a starting point for a Flutter application.
+- Windows desktop is the primary supported platform.
+- Windows can add and remove the acceleration routes from the original BAT script.
+- Windows can set or restore DNS on the active network interface.
+- macOS, Web, iOS, Android, and Linux launch with platform capability messaging.
 
-A few resources to get you started if this is your first Flutter project:
+## Default Configuration
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+- Company: 宁波市富金园艺灌溉设备有限公司
+- CPE gateway: `192.168.1.140`
+- Primary DNS: `223.5.5.5`
+- Secondary DNS: `114.114.114.114`
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Development
+
+```bash
+flutter pub get
+flutter test
+flutter analyze
+flutter build macos --debug
+```
+
+Run Windows manual acceptance on a Windows machine:
+
+```text
+docs/windows-manual-acceptance.md
+```
