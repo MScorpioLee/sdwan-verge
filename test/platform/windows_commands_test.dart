@@ -81,4 +81,19 @@ void main() {
 
     expect(command.display, 'route delete 0.0.0.0/1');
   });
+
+  test('builds PowerShell UAC relaunch command', () {
+    final command = WindowsCommands.relaunchAsAdmin(
+      'C:\\Program Files\\Sdwan\\sdwan.exe',
+    );
+
+    expect(command.executable, 'powershell');
+    expect(command.arguments, [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      'Start-Process -FilePath "C:\\Program Files\\Sdwan\\sdwan.exe" -Verb RunAs',
+    ]);
+  });
 }

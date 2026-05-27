@@ -7,7 +7,10 @@ import 'windows/windows_network_gateway.dart';
 
 NetworkPlatformGateway createNetworkPlatformGateway() {
   if (Platform.isWindows) {
-    return WindowsNetworkGateway(runner: ProcessCommandRunner());
+    return WindowsNetworkGateway(
+      runner: ProcessCommandRunner(),
+      executablePath: Platform.resolvedExecutable,
+    );
   }
   if (Platform.isMacOS) {
     return UnsupportedNetworkGateway('macOS');

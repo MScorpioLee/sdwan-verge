@@ -1,3 +1,5 @@
+import 'dart:io' show exit;
+
 import '../../domain/network_status.dart';
 import '../../domain/sdwan_profile.dart';
 import '../command_runner.dart';
@@ -6,9 +8,15 @@ import 'windows_commands.dart';
 import 'windows_parsers.dart';
 
 class WindowsNetworkGateway implements NetworkPlatformGateway {
-  WindowsNetworkGateway({required this.runner});
+  WindowsNetworkGateway({
+    required this.runner,
+    this.executablePath,
+    this.exitProcess = exit,
+  });
 
   final CommandRunner runner;
+  final String? executablePath;
+  final void Function(int code) exitProcess;
 
   @override
   Future<NetworkStatus> readStatus(SdwanProfile profile) async {
@@ -53,9 +61,23 @@ class WindowsNetworkGateway implements NetworkPlatformGateway {
         message: '管理员权限已就绪',
       );
     }
-    return const GatewayOperationResult(
-      success: false,
-      message: '当前不是管理员权限，请通过 UAC 重新启动应用',
+    final path = executablePath;
+    if (path == null || path.isEmpty) {
+      return const GatewayOperationResult(
+        success: false,
+        message: '当前不是管理员权限，请右键以管理员身份运行',
+      );
+    }
+    final command = WindowsCommands.relaunchAsAdmin(path);
+    final result = await _run(command);
+    if (result.succeeded) {
+      exitProcess(0);
+    }
+    return GatewayOperationResult(
+      success: result.succeeded,
+      message: result.succeeded ? '已请求管理员权限重新启动' : '请求管理员权限失败',
+      command: command.display,
+      exitCode: result.exitCode,
     );
   }
 

@@ -38,6 +38,17 @@ class WindowsCommands {
         ['interface', 'ip', 'show', 'dnsservers', interfaceName],
       );
 
+  static WindowsCommand relaunchAsAdmin(String executablePath) {
+    final escaped = executablePath.replaceAll('"', r'\"');
+    return WindowsCommand('powershell', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      'Start-Process -FilePath "$escaped" -Verb RunAs',
+    ]);
+  }
+
   static List<WindowsCommand> enableAcceleration(SdwanProfile profile) => [
         WindowsCommand('route', ['add', '0.0.0.0/1', profile.cpeIp, '-p']),
         WindowsCommand('route', ['add', '128.0.0.0/1', profile.cpeIp, '-p']),

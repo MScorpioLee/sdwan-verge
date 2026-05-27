@@ -11,6 +11,7 @@ Future<void> main() async {
     gateway: createNetworkPlatformGateway(),
     configStore: ConfigRepository(),
   );
+  await controller.gateway.ensureAdminOrRelaunch();
   await controller.initialize();
   runApp(SdwanClientApp(controller: controller));
 }

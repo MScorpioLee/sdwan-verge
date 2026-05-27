@@ -90,4 +90,26 @@ Configuration for interface "Ethernet"
     expect(status.dnsMode, DnsMode.static);
     expect(status.dnsServers, ['223.5.5.5', '114.114.114.114']);
   });
+
+  test('ensureAdminOrRelaunch starts elevated copy and exits current process',
+      () async {
+    final runner = FakeCommandRunner();
+    runner.responses['net session'] =
+        const CommandResult(exitCode: 1, stdout: '', stderr: 'access denied');
+    var exitCode = -1;
+    final gateway = WindowsNetworkGateway(
+      runner: runner,
+      executablePath: 'C:\\app\\sdwan.exe',
+      exitProcess: (code) => exitCode = code,
+    );
+
+    final result = await gateway.ensureAdminOrRelaunch();
+
+    expect(result.success, isTrue);
+    expect(exitCode, 0);
+    expect(runner.calls, [
+      'net session',
+      'powershell -NoProfile -ExecutionPolicy Bypass -Command Start-Process -FilePath "C:\\app\\sdwan.exe" -Verb RunAs',
+    ]);
+  });
 }
