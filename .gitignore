@@ -1,0 +1,14 @@
+.superpowers/
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# IDE and OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Local generated packages
+*.log
