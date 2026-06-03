@@ -1,0 +1,36 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+
+CORE=/usr/libexec/sdwan-verge/sdwan-verge-core
+
+start() {
+        "$CORE" start
+}
+
+stop() {
+        "$CORE" stop
+}
+
+restart() {
+        "$CORE" restart
+}
+
+reload() {
+        "$CORE" restart
+}
+
+status() {
+        "$CORE" status
+}
+
+extra_command "doctor" "Check SD-WAN Verge runtime dependencies and config"
+doctor() {
+        "$CORE" doctor
+}
+
+extra_command "logs" "Print SD-WAN Verge runtime logs"
+logs() {
+        "$CORE" logs
+}

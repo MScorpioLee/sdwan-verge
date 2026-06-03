@@ -1,0 +1,26 @@
+{
+  "luci-app-sdwan-verge": {
+    "description": "Grant LuCI access to SD-WAN Verge configuration and runtime commands",
+    "read": {
+      "uci": [
+        "sdwan_verge"
+      ],
+      "file": {
+        "/usr/libexec/sdwan-verge/sdwan-verge-core": [
+          "exec"
+        ]
+      }
+    },
+    "write": {
+      "uci": [
+        "sdwan_verge",
+        "dhcp"
+      ],
+      "file": {
+        "/usr/libexec/sdwan-verge/sdwan-verge-core": [
+          "exec"
+        ]
+      }
+    }
+  }
+}

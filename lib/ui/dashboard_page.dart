@@ -15,10 +15,11 @@ class DashboardPage extends StatelessWidget {
       builder: (context, _) {
         final status = controller.status;
         final profile = controller.config.activeProfile;
+        final canOperateLocally = status.capability == PlatformCapability.full;
         return ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            Text('国际网络加速工具', style: Theme.of(context).textTheme.headlineMedium),
+            Text('SD-WAN Verge', style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 20),
             Wrap(
               spacing: 12,
@@ -50,14 +51,14 @@ class DashboardPage extends StatelessWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 FilledButton.icon(
-                  onPressed: controller.busy
+                  onPressed: controller.busy || !canOperateLocally
                       ? null
                       : () => controller.enableAcceleration(),
                   icon: const Icon(Icons.play_arrow),
                   label: const Text('开启加速'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: controller.busy
+                  onPressed: controller.busy || !canOperateLocally
                       ? null
                       : () => controller.disableAcceleration(),
                   icon: const Icon(Icons.stop),
@@ -84,7 +85,11 @@ class DashboardPage extends StatelessWidget {
               const SizedBox(height: 12),
               Text(
                 status.message!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                style: TextStyle(
+                  color: canOperateLocally
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(context).colorScheme.error,
+                ),
               ),
             ],
           ],

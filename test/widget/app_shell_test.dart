@@ -71,7 +71,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('国际网络加速工具'), findsOneWidget);
+    expect(find.text('SD-WAN Verge'), findsOneWidget);
     expect(find.text('未开启'), findsOneWidget);
     expect(find.text('Ethernet'), findsOneWidget);
     expect(find.text('开启加速'), findsOneWidget);
@@ -82,4 +82,37 @@ void main() {
     expect(find.text('CPE 网关'), findsOneWidget);
     expect(find.text('路由操作同步 DNS'), findsOneWidget);
   });
+
+  testWidgets('disables local operations for remote manager platforms', (
+    tester,
+  ) async {
+    final controller = SdwanController(
+      gateway: _RemoteGateway(),
+      configStore: MemoryConfigStore(),
+    );
+    await controller.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(home: AppShell(controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    final startButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '开启加速'),
+    );
+    final stopButton = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, '关闭加速'),
+    );
+
+    expect(startButton.onPressed, isNull);
+    expect(stopButton.onPressed, isNull);
+    expect(find.textContaining('OpenWrt/iStoreOS 插件管理端'), findsOneWidget);
+  });
+}
+
+class _RemoteGateway extends FakeGateway {
+  @override
+  Future<NetworkStatus> readStatus(SdwanProfile profile) async {
+    return NetworkStatus.remoteManager('Android');
+  }
 }

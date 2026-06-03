@@ -1,0 +1,15 @@
+{
+  "admin/services/sdwan-verge": {
+    "title": "SD-WAN Verge",
+    "order": 60,
+    "action": {
+      "type": "view",
+      "path": "sdwan-verge/status"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-sdwan-verge"
+      ]
+    }
+  }
+}

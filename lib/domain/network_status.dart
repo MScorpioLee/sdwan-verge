@@ -1,4 +1,4 @@
-enum PlatformCapability { full, unsupported }
+enum PlatformCapability { full, remoteManager, unsupported }
 
 enum DnsMode { dhcp, static, unknown }
 
@@ -21,6 +21,14 @@ class NetworkStatus {
     isAdmin: false,
     accelerationEnabled: false,
     message: '$platformName 暂不支持直接修改系统路由和 DNS',
+  );
+
+  factory NetworkStatus.remoteManager(String platformName) => NetworkStatus(
+    platformName: platformName,
+    capability: PlatformCapability.remoteManager,
+    isAdmin: false,
+    accelerationEnabled: false,
+    message: '$platformName 可作为 OpenWrt/iStoreOS 插件管理端；本机不直接修改系统路由和 DNS',
   );
 
   final String platformName;

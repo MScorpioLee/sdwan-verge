@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="sdwan_client"
+        android:label="SD-WAN Verge"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -1,0 +1,297 @@
+#!/bin/sh
+
+CONFIG=sdwan_verge
+SECTION=main
+STATE_DIR=/tmp/sdwan-verge
+LOG_FILE=$STATE_DIR/sdwan-verge.log
+ACTIVE_FILE=$STATE_DIR/active
+BACKUP_DIR=/etc/sdwan-verge
+DNS_BACKUP=$BACKUP_DIR/dnsmasq-server.backup
+LOWER_ROUTE=0.0.0.0/1
+UPPER_ROUTE=128.0.0.0/1
+
+. /lib/functions.sh
+
+log() {
+        mkdir -p "$STATE_DIR"
+        printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE"
+}
+
+die() {
+        log "ERROR: $*"
+        echo "ERROR: $*" >&2
+        exit 1
+}
+
+append_dns_server() {
+        DNS_SERVERS="$DNS_SERVERS $1"
+}
+
+load_settings() {
+        CPE_GATEWAY=192.168.1.140
+        ENABLED=0
+        SYNC_DNS=1
+        DNS_SERVERS=
+
+        config_load "$CONFIG"
+        config_get CPE_GATEWAY "$SECTION" cpe_gateway "$CPE_GATEWAY"
+        config_get_bool ENABLED "$SECTION" enabled "$ENABLED"
+        config_get_bool SYNC_DNS "$SECTION" sync_dns "$SYNC_DNS"
+        config_list_foreach "$SECTION" dns_server append_dns_server
+
+        if [ -z "$DNS_SERVERS" ]; then
+                DNS_SERVERS="223.5.5.5 114.114.114.114"
+        fi
+}
+
+is_ipv4() {
+        echo "$1" | awk -F. '
+                NF != 4 { exit 1 }
+                {
+                        for (i = 1; i <= 4; i++) {
+                                if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) {
+                                        exit 1
+                                }
+                        }
+                }
+        '
+}
+
+validate_settings() {
+        command -v ip >/dev/null 2>&1 || die "missing ip command"
+        command -v uci >/dev/null 2>&1 || die "missing uci command"
+        is_ipv4 "$CPE_GATEWAY" || die "invalid CPE gateway: $CPE_GATEWAY"
+
+        for server in $DNS_SERVERS; do
+                is_ipv4 "$server" || die "invalid DNS server: $server"
+        done
+}
+
+route_present() {
+        ip route show "$1" 2>/dev/null | grep -Fq "via $CPE_GATEWAY"
+}
+
+add_routes() {
+        ip route replace 0.0.0.0/1 via "$CPE_GATEWAY" || return 1
+        ip route replace 128.0.0.0/1 via "$CPE_GATEWAY" || return 1
+        log "routes applied via $CPE_GATEWAY"
+}
+
+delete_routes() {
+        ip route del "$LOWER_ROUTE" via "$CPE_GATEWAY" 2>/dev/null || ip route del "$LOWER_ROUTE" 2>/dev/null || true
+        ip route del "$UPPER_ROUTE" via "$CPE_GATEWAY" 2>/dev/null || ip route del "$UPPER_ROUTE" 2>/dev/null || true
+        log "routes removed"
+}
+
+restart_dnsmasq() {
+        if [ -x /etc/init.d/dnsmasq ]; then
+                /etc/init.d/dnsmasq restart
+        else
+                die "missing /etc/init.d/dnsmasq"
+        fi
+}
+
+backup_dns() {
+        mkdir -p "$BACKUP_DIR"
+        if [ ! -f "$DNS_BACKUP" ]; then
+                uci -q get dhcp.@dnsmasq[0].server >"$DNS_BACKUP" 2>/dev/null || :
+                log "dnsmasq DNS backup saved"
+        fi
+}
+
+set_dns() {
+        [ "$SYNC_DNS" = "1" ] || {
+                log "DNS sync disabled"
+                return 0
+        }
+
+        backup_dns
+        uci -q delete dhcp.@dnsmasq[0].server || true
+
+        for server in $DNS_SERVERS; do
+                uci add_list dhcp.@dnsmasq[0].server="$server" >/dev/null || return 1
+        done
+
+        uci commit dhcp || return 1
+        restart_dnsmasq
+        log "dnsmasq DNS applied:$DNS_SERVERS"
+}
+
+restore_dns() {
+        [ "$SYNC_DNS" = "1" ] || {
+                log "DNS sync disabled"
+                return 0
+        }
+
+        uci -q delete dhcp.@dnsmasq[0].server || true
+
+        if [ -f "$DNS_BACKUP" ]; then
+                while IFS= read -r server; do
+                        [ -n "$server" ] || continue
+                        uci add_list dhcp.@dnsmasq[0].server="$server" >/dev/null || return 1
+                done <"$DNS_BACKUP"
+                rm -f "$DNS_BACKUP"
+                log "dnsmasq DNS restored from backup"
+        else
+                log "dnsmasq DNS backup not found; server list cleared"
+        fi
+
+        uci commit dhcp || return 1
+        restart_dnsmasq
+}
+
+mark_enabled() {
+        uci set "$CONFIG.$SECTION.enabled=1"
+        uci commit "$CONFIG"
+        mkdir -p "$STATE_DIR"
+        printf '%s\n' "$CPE_GATEWAY" >"$ACTIVE_FILE"
+}
+
+mark_disabled() {
+        uci set "$CONFIG.$SECTION.enabled=0"
+        uci commit "$CONFIG"
+        rm -f "$ACTIVE_FILE"
+}
+
+start_acceleration() {
+        load_settings
+        validate_settings
+
+        if ! add_routes; then
+                die "failed to apply routes via $CPE_GATEWAY"
+        fi
+
+        if ! set_dns; then
+                delete_routes
+                die "failed to apply DNS; routes rolled back"
+        fi
+
+        mark_enabled
+        log "SD-WAN Verge started"
+        echo "SD-WAN Verge started via $CPE_GATEWAY"
+}
+
+stop_acceleration() {
+        load_settings
+        validate_settings
+        delete_routes
+
+        if ! restore_dns; then
+                die "failed to restore DNS"
+        fi
+
+        mark_disabled
+        log "SD-WAN Verge stopped"
+        echo "SD-WAN Verge stopped"
+}
+
+json_dns_servers() {
+        first=1
+        printf '['
+        for server in $DNS_SERVERS; do
+                if [ "$first" = "1" ]; then
+                        first=0
+                else
+                        printf ','
+                fi
+                printf '"%s"' "$server"
+        done
+        printf ']'
+}
+
+status_json() {
+        load_settings
+        lower=false
+        upper=false
+        active=false
+        enabled=false
+
+        [ "$ENABLED" = "1" ] && enabled=true
+        route_present "$LOWER_ROUTE" && lower=true
+        route_present "$UPPER_ROUTE" && upper=true
+
+        if [ "$lower" = "true" ] && [ "$upper" = "true" ]; then
+                active=true
+        fi
+
+        printf '{'
+        printf '"enabled":%s,' "$enabled"
+        printf '"active":%s,' "$active"
+        printf '"gateway":"%s",' "$CPE_GATEWAY"
+        printf '"syncDns":%s,' "$([ "$SYNC_DNS" = "1" ] && echo true || echo false)"
+        printf '"routes":{"lower":%s,"upper":%s},' "$lower" "$upper"
+        printf '"dnsServers":'
+        json_dns_servers
+        printf ','
+        printf '"logFile":"%s"' "$LOG_FILE"
+        printf '}\n'
+}
+
+doctor() {
+        load_settings
+        validate_settings
+        [ -x /etc/init.d/dnsmasq ] || die "missing /etc/init.d/dnsmasq"
+        echo "SD-WAN Verge doctor OK"
+        echo "gateway=$CPE_GATEWAY"
+        echo "dns_servers=$DNS_SERVERS"
+}
+
+show_logs() {
+        if [ -f "$LOG_FILE" ]; then
+                cat "$LOG_FILE"
+        else
+                echo "No SD-WAN Verge logs yet."
+        fi
+}
+
+usage() {
+        cat <<'EOF'
+Usage: sdwan-verge-core <command>
+
+Commands:
+  start        Apply SD-WAN routes and optional DNS.
+  stop         Remove SD-WAN routes and restore DNS.
+  restart      Stop then start.
+  status       Print JSON runtime status.
+  set-dns      Apply configured DNS only.
+  restore-dns  Restore backed-up DNS only.
+  logs         Print runtime logs.
+  doctor       Check dependencies and config.
+EOF
+}
+
+case "${1:-}" in
+        start)
+                start_acceleration
+                ;;
+        stop)
+                stop_acceleration
+                ;;
+        restart)
+                stop_acceleration
+                start_acceleration
+                ;;
+        status)
+                status_json
+                ;;
+        set-dns)
+                load_settings
+                validate_settings
+                set_dns
+                ;;
+        restore-dns)
+                load_settings
+                validate_settings
+                restore_dns
+                ;;
+        logs)
+                show_logs
+                ;;
+        doctor)
+                doctor
+                ;;
+        *)
+                usage
+                exit 1
+                ;;
+esac
