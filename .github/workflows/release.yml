@@ -118,12 +118,31 @@ jobs:
           cache: true
       - run: flutter --version
       - run: flutter pub get
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows/third_party/wintun/bin/x64 | Out-Null
+          New-Item -ItemType Directory -Force windows/third_party/windivert/bin/x64 | Out-Null
+          New-Item -ItemType Directory -Force windows/third_party/windivert/include | Out-Null
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$env:RUNNER_TEMP\wintun.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wintun.zip" "$env:RUNNER_TEMP\wintun" -Force
+          Copy-Item "$env:RUNNER_TEMP\wintun\wintun\bin\amd64\wintun.dll" "windows\third_party\wintun\bin\x64\wintun.dll" -Force
+          Invoke-WebRequest "https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip" -OutFile "$env:RUNNER_TEMP\windivert.zip"
+          Expand-Archive "$env:RUNNER_TEMP\windivert.zip" "$env:RUNNER_TEMP\windivert" -Force
+          Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\include\windivert.h" "windows\third_party\windivert\include\windivert.h" -Force
+          Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\x64\WinDivert.dll" "windows\third_party\windivert\bin\x64\WinDivert.dll" -Force
+          Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\x64\WinDivert64.sys" "windows\third_party\windivert\bin\x64\WinDivert64.sys" -Force
       - run: flutter build windows --release
+      - shell: pwsh
+        run: .\build\windows\x64\runner\Release\sdwan_windows_helper.exe self-test
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/releases | Out-Null
           choco install innosetup --no-progress -y
-          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}" -replace '^v', ''
+          } else {
+            $version = "0.1.2-dev"
+          }
           $env:SDWAN_SOURCE_DIR = (Resolve-Path "build/windows/x64/runner/Release").Path
           $env:SDWAN_OUTPUT_DIR = (Resolve-Path "dist/releases").Path
           $env:SDWAN_APP_VERSION = $version

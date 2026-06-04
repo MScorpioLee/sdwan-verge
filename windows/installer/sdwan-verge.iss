@@ -34,4 +34,8 @@ Name: "{group}\SD-WAN Verge"; Filename: "{app}\sdwan_client.exe"
 Name: "{autodesktop}\SD-WAN Verge"; Filename: "{app}\sdwan_client.exe"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\sdwan_windows_helper.exe"; Parameters: "install"; Flags: runhidden waituntilterminated
 Filename: "{app}\sdwan_client.exe"; Description: "{cm:LaunchProgram,SD-WAN Verge}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{app}\sdwan_windows_helper.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated
