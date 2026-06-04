@@ -10,6 +10,10 @@ package_macos() {
   local app_path="$ROOT_DIR/build/macos/Build/Products/Release/SD-WAN Verge.app"
   local out_path="$DIST_DIR/sdwan-verge-macos-arm64-release.zip"
   if [[ -d "$app_path" ]]; then
+    local helper_path
+    helper_path="$("$ROOT_DIR/scripts/build_macos_helper.sh")"
+    cp "$helper_path" "$app_path/Contents/Resources/sdwan-macos-helper"
+    chmod 755 "$app_path/Contents/Resources/sdwan-macos-helper"
     (cd "$(dirname "$app_path")" && zip -qry "$out_path" "$(basename "$app_path")")
     echo "packaged $out_path"
   fi
