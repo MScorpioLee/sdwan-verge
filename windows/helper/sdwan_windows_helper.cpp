@@ -1509,9 +1509,19 @@ bool StopAndDeleteService() {
   return ok;
 }
 
+int SelfTestFail(int code, const char* message) {
+  fprintf(stderr, "SELF_TEST_FAIL[%d] %s\n", code, message);
+  printf("SELF_TEST_FAIL[%d] %s\n", code, message);
+  fflush(stderr);
+  fflush(stdout);
+  return code;
+}
+
 int CommandSelfTest() {
   WSADATA wsa = {};
-  WSAStartup(MAKEWORD(2, 2), &wsa);
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    return SelfTestFail(10, "wsa startup failed");
+  }
   uint8_t packet[256] = {};
   size_t len = 0;
   NatTable table = {};
@@ -1521,14 +1531,14 @@ int CommandSelfTest() {
   const uint32_t remote_ip = 0x08080808;
   MakeUdpPacket(packet, &len, tun_ip, remote_ip, 12345, 53);
   if (!NatTranslateOutgoing(&table, packet, len, physical_ip, cpe_ip)) {
-    fprintf(stderr, "nat outgoing failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(11, "nat outgoing failed");
   }
   if (ReadU32(packet + 12) != physical_ip ||
       ReadU16(packet + 20) < kNatPortStart || ReadU16(packet + 20) > kNatPortEnd ||
       ReadU32(packet + 16) != cpe_ip) {
-    fprintf(stderr, "nat outbound rewrite failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(12, "nat outbound rewrite failed");
   }
   const uint16_t translated_port = ReadU16(packet + 20);
   uint8_t reply[256] = {};
@@ -1537,8 +1547,8 @@ int CommandSelfTest() {
       ReadU32(reply + 16) != tun_ip ||
       ReadU32(reply + 12) != remote_ip ||
       ReadU16(reply + 22) != 12345) {
-    fprintf(stderr, "nat inbound restore failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(13, "nat inbound restore failed");
   }
   NatTable dns_table = {};
   const uint8_t dns_query_payload[] = {
@@ -1552,12 +1562,12 @@ int CommandSelfTest() {
   char query_domain[256] = {};
   if (!DnsQueryDomainFromPacket(packet, len, query_domain, sizeof(query_domain)) ||
       strcmp(query_domain, "example.com") != 0) {
-    fprintf(stderr, "dns query parse failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(14, "dns query parse failed");
   }
   if (!NatTranslateOutgoing(&dns_table, packet, len, physical_ip, cpe_ip)) {
-    fprintf(stderr, "dns nat outgoing failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(15, "dns nat outgoing failed");
   }
   const uint16_t dns_translated_port = ReadU16(packet + 20);
   const uint8_t dns_response_payload[] = {
@@ -1572,8 +1582,8 @@ int CommandSelfTest() {
   AppendUdpPayload(reply, &len, dns_response_payload, sizeof(dns_response_payload));
   if (!NatTranslateIncoming(&dns_table, reply, len, physical_ip) ||
       strcmp(DnsCacheLookup(&dns_table, 0x5db8d822), "example.com") != 0) {
-    fprintf(stderr, "dns cache failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(16, "dns cache failed");
   }
   Runtime rate_runtime = {};
   rate_runtime.tx_bytes = 1500;
@@ -1591,8 +1601,8 @@ int CommandSelfTest() {
   UpdateRatesLocked(&rate_runtime, 15);
   if (rate_runtime.tx_rate != 200 || rate_runtime.rx_rate != 400 ||
       rate_entry->tx_rate != 120 || rate_entry->rx_rate != 120) {
-    fprintf(stderr, "rate calculation failed\n");
-    return 1;
+    WSACleanup();
+    return SelfTestFail(17, "rate calculation failed");
   }
   WSACleanup();
   printf("SELF_TEST_OK\n");
