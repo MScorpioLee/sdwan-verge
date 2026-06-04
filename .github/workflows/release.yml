@@ -133,7 +133,15 @@ jobs:
           Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\x64\WinDivert64.sys" "windows\third_party\windivert\bin\x64\WinDivert64.sys" -Force
       - run: flutter build windows --release
       - shell: pwsh
-        run: .\build\windows\x64\runner\Release\sdwan_windows_helper.exe self-test
+        run: |
+          $helper = ".\build\windows\x64\runner\Release\sdwan_windows_helper.exe"
+          Get-Item $helper | Format-List FullName,Length
+          & $helper self-test
+          $code = $LASTEXITCODE
+          Write-Host "sdwan_windows_helper self-test exit code: $code"
+          if ($code -ne 0) {
+            exit $code
+          }
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/releases | Out-Null
