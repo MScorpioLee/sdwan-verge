@@ -2,8 +2,9 @@
 #include <ws2tcpip.h>
 
 #include <windows.h>
-#include <icmpapi.h>
+#include <Ipexport.h>
 #include <iphlpapi.h>
+#include <icmpapi.h>
 #include <netioapi.h>
 #include <sddl.h>
 
