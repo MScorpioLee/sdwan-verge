@@ -146,13 +146,7 @@ class AppDelegate: FlutterAppDelegate {
   }
 
   private func helperPath() -> String? {
-    if let bundled = Bundle.main.path(forResource: helperName, ofType: nil) {
-      return bundled
-    }
-    let devPath = FileManager.default.currentDirectoryPath
-      + "/build/macos/helper/"
-      + helperName
-    return FileManager.default.isExecutableFile(atPath: devPath) ? devPath : nil
+    Bundle.main.path(forResource: helperName, ofType: nil)
   }
 
   private func runHelper(_ arguments: [String]) -> (exitCode: Int32, output: String) {

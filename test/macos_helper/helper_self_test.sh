@@ -19,3 +19,18 @@ grep -q "PLAN_ONLY_NO_CHANGES_APPLIED" <<<"$PLAN_OUTPUT"
   "$ROOT_DIR/macos/Runner/Release.entitlements" | grep -q "true"
 /usr/libexec/PlistBuddy -c "Print :com.apple.security.network.client" \
   "$ROOT_DIR/macos/Runner/DebugProfile.entitlements" | grep -q "true"
+/usr/libexec/PlistBuddy -c "Print :com.apple.security.network.server" \
+  "$ROOT_DIR/macos/Runner/Release.entitlements" | grep -q "true"
+/usr/libexec/PlistBuddy -c "Print :com.apple.security.network.server" \
+  "$ROOT_DIR/macos/Runner/DebugProfile.entitlements" | grep -q "true"
+
+if /usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" \
+  "$ROOT_DIR/macos/Runner/Release.entitlements" >/dev/null 2>&1; then
+  echo "Release.entitlements must not enable App Sandbox" >&2
+  exit 1
+fi
+if /usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" \
+  "$ROOT_DIR/macos/Runner/DebugProfile.entitlements" >/dev/null 2>&1; then
+  echo "DebugProfile.entitlements must not enable App Sandbox" >&2
+  exit 1
+fi
