@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -1524,13 +1525,13 @@ int CommandSelfTest() {
   }
   uint8_t packet[256] = {};
   size_t len = 0;
-  NatTable table = {};
+  auto table = std::make_unique<NatTable>();
   const uint32_t tun_ip = 0x0aff0002;
   const uint32_t physical_ip = 0xc0a80158;
   const uint32_t cpe_ip = 0xc0a8018c;
   const uint32_t remote_ip = 0x08080808;
   MakeUdpPacket(packet, &len, tun_ip, remote_ip, 12345, 53);
-  if (!NatTranslateOutgoing(&table, packet, len, physical_ip, cpe_ip)) {
+  if (!NatTranslateOutgoing(table.get(), packet, len, physical_ip, cpe_ip)) {
     WSACleanup();
     return SelfTestFail(11, "nat outgoing failed");
   }
@@ -1543,14 +1544,14 @@ int CommandSelfTest() {
   const uint16_t translated_port = ReadU16(packet + 20);
   uint8_t reply[256] = {};
   MakeUdpPacket(reply, &len, cpe_ip, physical_ip, 53, translated_port);
-  if (!NatTranslateIncoming(&table, reply, len, physical_ip) ||
+  if (!NatTranslateIncoming(table.get(), reply, len, physical_ip) ||
       ReadU32(reply + 16) != tun_ip ||
       ReadU32(reply + 12) != remote_ip ||
       ReadU16(reply + 22) != 12345) {
     WSACleanup();
     return SelfTestFail(13, "nat inbound restore failed");
   }
-  NatTable dns_table = {};
+  auto dns_table = std::make_unique<NatTable>();
   const uint8_t dns_query_payload[] = {
       0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
       0x00, 0x00, 0x00, 0x00, 0x07, 'e',  'x',  'a',
@@ -1565,7 +1566,7 @@ int CommandSelfTest() {
     WSACleanup();
     return SelfTestFail(14, "dns query parse failed");
   }
-  if (!NatTranslateOutgoing(&dns_table, packet, len, physical_ip, cpe_ip)) {
+  if (!NatTranslateOutgoing(dns_table.get(), packet, len, physical_ip, cpe_ip)) {
     WSACleanup();
     return SelfTestFail(15, "dns nat outgoing failed");
   }
@@ -1580,26 +1581,26 @@ int CommandSelfTest() {
   };
   MakeUdpPacket(reply, &len, cpe_ip, physical_ip, 53, dns_translated_port);
   AppendUdpPayload(reply, &len, dns_response_payload, sizeof(dns_response_payload));
-  if (!NatTranslateIncoming(&dns_table, reply, len, physical_ip) ||
-      strcmp(DnsCacheLookup(&dns_table, 0x5db8d822), "example.com") != 0) {
+  if (!NatTranslateIncoming(dns_table.get(), reply, len, physical_ip) ||
+      strcmp(DnsCacheLookup(dns_table.get(), 0x5db8d822), "example.com") != 0) {
     WSACleanup();
     return SelfTestFail(16, "dns cache failed");
   }
-  Runtime rate_runtime = {};
-  rate_runtime.tx_bytes = 1500;
-  rate_runtime.rx_bytes = 3000;
-  rate_runtime.last_tx_bytes = 500;
-  rate_runtime.last_rx_bytes = 1000;
-  rate_runtime.last_rate_at = 10;
-  NatEntry* rate_entry = &rate_runtime.nat.entries[0];
+  auto rate_runtime = std::make_unique<Runtime>();
+  rate_runtime->tx_bytes = 1500;
+  rate_runtime->rx_bytes = 3000;
+  rate_runtime->last_tx_bytes = 500;
+  rate_runtime->last_rx_bytes = 1000;
+  rate_runtime->last_rate_at = 10;
+  NatEntry* rate_entry = &rate_runtime->nat.entries[0];
   rate_entry->used = true;
   rate_entry->tx_bytes = 700;
   rate_entry->rx_bytes = 900;
   rate_entry->last_tx_bytes = 100;
   rate_entry->last_rx_bytes = 300;
   rate_entry->last_rate_at = 10;
-  UpdateRatesLocked(&rate_runtime, 15);
-  if (rate_runtime.tx_rate != 200 || rate_runtime.rx_rate != 400 ||
+  UpdateRatesLocked(rate_runtime.get(), 15);
+  if (rate_runtime->tx_rate != 200 || rate_runtime->rx_rate != 400 ||
       rate_entry->tx_rate != 120 || rate_entry->rx_rate != 120) {
     WSACleanup();
     return SelfTestFail(17, "rate calculation failed");
