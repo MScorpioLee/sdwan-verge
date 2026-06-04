@@ -33,6 +33,8 @@ constexpr wchar_t kTunnelType[] = L"SDWAN";
 constexpr char kDefaultCpe[] = "192.168.1.140";
 constexpr char kTunLocal[] = "10.255.0.2";
 constexpr char kTunPeer[] = "10.255.0.1";
+constexpr int kTunRouteMetric = 5;
+constexpr int kPhysicalEgressRouteMetric = 50;
 constexpr uint16_t kNatPortStart = 42000;
 constexpr uint16_t kNatPortEnd = 42999;
 constexpr size_t kMaxNat = 4096;
@@ -136,9 +138,11 @@ struct Runtime {
   std::string state = "stopped";
   std::string permission = "ready";
   std::string cpe = kDefaultCpe;
+  std::string route_cpe;
   std::string last_error;
   uint32_t cpe_ip = 0;
   PhysicalAdapter physical;
+  std::wstring route_physical_name;
   uint32_t wintun_if_index = 0;
   NatTable nat = {};
   uint64_t tx_bytes = 0;
@@ -764,6 +768,26 @@ bool RunCommand(const std::wstring& command) {
   return code == 0;
 }
 
+void DeleteHalfRoutesVia(const std::wstring& gateway) {
+  if (gateway.empty()) {
+    return;
+  }
+  RunCommand(L"route delete 0.0.0.0 mask 128.0.0.0 " + gateway + L" >NUL 2>NUL");
+  RunCommand(L"route delete 128.0.0.0 mask 128.0.0.0 " + gateway + L" >NUL 2>NUL");
+}
+
+void DeleteCpeHostRoute(const std::wstring& cpe, const std::wstring& interface_name) {
+  if (cpe.empty() || interface_name.empty()) {
+    return;
+  }
+  RunCommand(L"netsh interface ipv4 delete route " + cpe + L"/32 \"" +
+             interface_name + L"\" store=active >NUL 2>NUL");
+}
+
+std::wstring RouteMetric(int metric) {
+  return std::to_wstring(metric);
+}
+
 bool LoadWintun(WintunApi* api) {
   if (api->module != nullptr) {
     return true;
@@ -902,16 +926,27 @@ bool FindAdapterIndexByName(const wchar_t* friendly_name, uint32_t* if_index) {
 }
 
 void CleanupRoutes(Runtime* runtime) {
-  RunCommand(L"route delete 0.0.0.0 mask 128.0.0.0 >NUL 2>NUL");
-  RunCommand(L"route delete 128.0.0.0 mask 128.0.0.0 >NUL 2>NUL");
-  std::wstring cpe = Utf8ToWide(runtime->cpe);
-  RunCommand(L"netsh interface ipv4 delete route " + cpe + L"/32 \"" +
-             runtime->physical.name + L"\" store=active >NUL 2>NUL");
+  const std::wstring tun_peer = Utf8ToWide(kTunPeer);
+  const std::wstring current_cpe = Utf8ToWide(runtime->cpe);
+  const std::wstring routed_cpe = Utf8ToWide(runtime->route_cpe);
+  DeleteHalfRoutesVia(tun_peer);
+  DeleteHalfRoutesVia(current_cpe);
+  if (!routed_cpe.empty() && routed_cpe != current_cpe) {
+    DeleteHalfRoutesVia(routed_cpe);
+  }
+  DeleteCpeHostRoute(current_cpe, runtime->physical.name);
+  if (!routed_cpe.empty() && routed_cpe != current_cpe) {
+    DeleteCpeHostRoute(routed_cpe, runtime->route_physical_name);
+  }
+  runtime->route_cpe.clear();
+  runtime->route_physical_name.clear();
 }
 
 bool ConfigureWintunAddressAndRoutes(Runtime* runtime) {
   const std::wstring adapter = kAdapterName;
   const std::wstring cpe = Utf8ToWide(runtime->cpe);
+  const std::wstring physical_if = std::to_wstring(runtime->physical.if_index);
+  const std::wstring wintun_if = std::to_wstring(runtime->wintun_if_index);
   bool ok = true;
   ok &= RunCommand(L"netsh interface ipv4 set address name=\"" + adapter +
                    L"\" static 10.255.0.2 255.255.255.252 >NUL");
@@ -919,10 +954,18 @@ bool ConfigureWintunAddressAndRoutes(Runtime* runtime) {
                    L"\" static " + cpe + L" primary >NUL");
   ok &= RunCommand(L"netsh interface ipv4 add route " + cpe + L"/32 \"" +
                    runtime->physical.name + L"\" 0.0.0.0 store=active >NUL");
-  ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 10.255.0.1 metric 5 if " +
-                   std::to_wstring(runtime->wintun_if_index) + L" >NUL");
-  ok &= RunCommand(L"route add 128.0.0.0 mask 128.0.0.0 10.255.0.1 metric 5 if " +
-                   std::to_wstring(runtime->wintun_if_index) + L" >NUL");
+  ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 " + cpe + L" metric " +
+                   RouteMetric(kPhysicalEgressRouteMetric) + L" if " + physical_if + L" >NUL");
+  ok &= RunCommand(L"route add 128.0.0.0 mask 128.0.0.0 " + cpe + L" metric " +
+                   RouteMetric(kPhysicalEgressRouteMetric) + L" if " + physical_if + L" >NUL");
+  ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 " + Utf8ToWide(kTunPeer) + L" metric " +
+                   RouteMetric(kTunRouteMetric) + L" if " + wintun_if + L" >NUL");
+  ok &= RunCommand(L"route add 128.0.0.0 mask 128.0.0.0 " + Utf8ToWide(kTunPeer) + L" metric " +
+                   RouteMetric(kTunRouteMetric) + L" if " + wintun_if + L" >NUL");
+  if (ok) {
+    runtime->route_cpe = runtime->cpe;
+    runtime->route_physical_name = runtime->physical.name;
+  }
   return ok;
 }
 
@@ -943,7 +986,7 @@ bool PingCpe(const std::string& host) {
   return result != 0;
 }
 
-bool L3Probe() {
+bool L3Probe(uint32_t physical_if_index) {
   SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sock == INVALID_SOCKET) {
     return false;
@@ -951,6 +994,14 @@ bool L3Probe() {
   DWORD timeout = 1500;
   setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
   setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+  if (physical_if_index != 0) {
+    const DWORD scoped_if = htonl(physical_if_index);
+    if (setsockopt(sock, IPPROTO_IP, IP_UNICAST_IF, reinterpret_cast<const char*>(&scoped_if),
+                   sizeof(scoped_if)) != 0) {
+      closesocket(sock);
+      return false;
+    }
+  }
   sockaddr_in target = {};
   target.sin_family = AF_INET;
   inet_pton(AF_INET, "1.1.1.1", &target.sin_addr);
@@ -1131,8 +1182,15 @@ void HealthLoop(Runtime* runtime) {
       std::lock_guard<std::mutex> lock(runtime->mutex);
       UpdateRatesLocked(runtime, time(nullptr));
     }
-    const bool l1 = PingCpe(runtime->cpe);
-    const bool l3 = runtime->running ? L3Probe() : l1;
+    uint32_t physical_if_index = 0;
+    std::string cpe;
+    {
+      std::lock_guard<std::mutex> lock(runtime->mutex);
+      physical_if_index = runtime->physical.if_index;
+      cpe = runtime->cpe;
+    }
+    const bool l1 = PingCpe(cpe);
+    const bool l3 = runtime->running ? L3Probe(physical_if_index) : l1;
     if (l1 && l3) {
       runtime->health_failures = 0;
     } else {
@@ -1146,12 +1204,22 @@ void HealthLoop(Runtime* runtime) {
 }
 
 bool StartAcceleration(const std::string& cpe) {
+  const std::string target_cpe = cpe.empty() ? kDefaultCpe : cpe;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    if (g_runtime.running.load() && g_runtime.cpe == target_cpe) {
+      return true;
+    }
+  }
+  if (g_runtime.running.load()) {
+    LogEvent("Windows CPE changed, restarting acceleration");
+    StopAcceleration("cpe changed", false);
+  }
   std::lock_guard<std::mutex> lock(g_runtime.mutex);
   if (g_runtime.running.load()) {
-    g_runtime.cpe = cpe.empty() ? kDefaultCpe : cpe;
     return true;
   }
-  g_runtime.cpe = cpe.empty() ? kDefaultCpe : cpe;
+  g_runtime.cpe = target_cpe;
   g_runtime.last_error.clear();
   g_runtime.state = "starting";
   g_runtime.stop_requested = false;
@@ -1209,6 +1277,7 @@ bool StartAcceleration(const std::string& cpe) {
     g_runtime.last_error = "failed to configure Wintun routes";
     return false;
   }
+  LogEvent("Windows route layer ready: Wintun capture with CPE physical egress");
   const std::string physical_ip = Ipv4ToString(g_runtime.physical.ip);
   const std::string filter =
       "inbound and ip and ip.DstAddr == " + physical_ip +
@@ -1317,7 +1386,7 @@ std::string HandleCommand(const std::string& command) {
   }
   if (name == "status" || name == "health") {
     std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    if (!cpe.empty()) {
+    if (!cpe.empty() && !g_runtime.running.load()) {
       g_runtime.cpe = cpe;
     }
     return StatusTextLocked(&g_runtime);
