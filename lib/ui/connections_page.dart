@@ -660,6 +660,7 @@ class _ChartTooltip extends StatelessWidget {
               const SizedBox(height: 5),
               Text('$prefix上行：${_formatRate(sample.txRate)}'),
               Text('$prefix下行：${_formatRate(sample.rxRate)}'),
+              if (sample.rttMs != null) Text('平均延迟：${sample.rttMs} ms'),
             ],
           ),
         ),
@@ -696,6 +697,7 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     }
 
     final maxRate = _niceMaxRate(samples);
+    final maxRtt = _niceMaxRtt(samples);
     _drawYAxis(canvas, rect, maxRate);
     final txPoints = _pointsFor(
       samples,
@@ -711,10 +713,22 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     );
     _drawLine(canvas, txPoints, const Color(0xFF8C8AE8), rect);
     _drawLine(canvas, rxPoints, const Color(0xFF74B889), rect);
-    _drawHover(canvas, rect, maxRate);
+    final rttPoints = _rttPointsFor(samples, rect, maxRtt);
+    _drawRttLine(canvas, rttPoints, rect);
+    _drawHover(canvas, rect, maxRate, maxRtt);
   }
 
   void _drawAxisTitles(Canvas canvas, Rect rect) {
+    if (samples.any((sample) => sample.rttMs != null)) {
+      _drawText(
+        canvas,
+        '延迟ms',
+        Offset(rect.left - 2, 0),
+        color: AppColors.textPrimary,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      );
+    }
     _drawText(
       canvas,
       '速率',
@@ -750,10 +764,21 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
   }
 
   void _drawYAxis(Canvas canvas, Rect rect, int maxRate) {
+    final maxRtt = _niceMaxRtt(samples);
+    final hasRtt = samples.any((sample) => sample.rttMs != null);
     for (var i = 0; i <= 5; i++) {
       final ratio = i / 5;
       final y = rect.bottom - rect.height * ratio;
       final rate = (maxRate * ratio).round();
+      if (hasRtt) {
+        _drawText(
+          canvas,
+          '${(maxRtt * ratio).round()}',
+          Offset(0, y - 7),
+          color: AppColors.textSecondary,
+          fontSize: 11,
+        );
+      }
       _drawText(
         canvas,
         _formatBytes(rate),
@@ -804,6 +829,29 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     ];
   }
 
+  List<Offset> _rttPointsFor(
+    List<TrafficSample> samples,
+    Rect rect,
+    int maxRtt,
+  ) {
+    final points = <Offset>[];
+    for (var i = 0; i < samples.length; i++) {
+      final rtt = samples[i].rttMs;
+      if (rtt == null) {
+        continue;
+      }
+      points.add(
+        Offset(
+          samples.length == 1
+              ? rect.right
+              : rect.left + rect.width * i / (samples.length - 1),
+          rect.bottom - rect.height * (rtt.clamp(0, maxRtt) / maxRtt),
+        ),
+      );
+    }
+    return points;
+  }
+
   void _drawLine(Canvas canvas, List<Offset> points, Color color, Rect rect) {
     if (points.isEmpty) {
       return;
@@ -826,6 +874,19 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     canvas.drawPath(path, stroke);
   }
 
+  void _drawRttLine(Canvas canvas, List<Offset> points, Rect rect) {
+    if (points.isEmpty) {
+      return;
+    }
+    final paint = Paint()
+      ..color = const Color(0xFF66A8FF)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    final path = _smoothPath(points);
+    canvas.drawPath(path, paint);
+  }
+
   Path _smoothPath(List<Offset> points) {
     final path = Path()..moveTo(points.first.dx, points.first.dy);
     if (points.length == 1) {
@@ -844,7 +905,7 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     return path;
   }
 
-  void _drawHover(Canvas canvas, Rect rect, int maxRate) {
+  void _drawHover(Canvas canvas, Rect rect, int maxRate, int maxRtt) {
     final index = hoverIndex;
     if (index == null || index < 0 || index >= samples.length) {
       return;
@@ -859,6 +920,8 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     for (final point in [
       _pointAt(samples[index].txRate, x, rect, maxRate),
       _pointAt(samples[index].rxRate, x, rect, maxRate),
+      if (samples[index].rttMs != null)
+        _pointAt(samples[index].rttMs!, x, rect, maxRtt),
     ]) {
       canvas.drawCircle(
         point,
@@ -1218,6 +1281,7 @@ List<TrafficSample> _smoothedSamples(List<TrafficSample> samples) {
         at: samples[i].at,
         txRate: _averageAround(samples, i, (sample) => sample.txRate),
         rxRate: _averageAround(samples, i, (sample) => sample.rxRate),
+        rttMs: _averageNullableAround(samples, i, (sample) => sample.rttMs),
       ),
   ];
 }
@@ -1236,6 +1300,26 @@ int _averageAround(
     count += 1;
   }
   return count == 0 ? 0 : (total / count).round();
+}
+
+int? _averageNullableAround(
+  List<TrafficSample> samples,
+  int index,
+  int? Function(TrafficSample sample) selector,
+) {
+  final start = math.max(0, index - 1);
+  final end = math.min(samples.length - 1, index + 1);
+  var total = 0;
+  var count = 0;
+  for (var i = start; i <= end; i++) {
+    final value = selector(samples[i]);
+    if (value == null) {
+      continue;
+    }
+    total += value;
+    count += 1;
+  }
+  return count == 0 ? null : (total / count).round();
 }
 
 int _niceMaxRate(List<TrafficSample> samples) {
@@ -1262,6 +1346,21 @@ int _niceMaxRate(List<TrafficSample> samples) {
     20 * 1024 * 1024,
     50 * 1024 * 1024,
   ];
+  for (final step in steps) {
+    if (padded <= step) {
+      return step;
+    }
+  }
+  return padded;
+}
+
+int _niceMaxRtt(List<TrafficSample> samples) {
+  final maxRtt = samples.fold<int>(
+    1,
+    (maxRtt, sample) => math.max(maxRtt, sample.rttMs ?? 0),
+  );
+  final padded = (maxRtt * 1.25).ceil();
+  const steps = [50, 100, 200, 400, 800, 1200, 2000, 5000];
   for (final step in steps) {
     if (padded <= step) {
       return step;

@@ -175,6 +175,34 @@ void main() {
   });
 
   test(
+    'probes latency targets through native channel when available',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            expect(call.method, 'probeLatency');
+            expect(call.arguments, {
+              'id': 'cloudflare',
+              'name': 'Cloudflare',
+              'url': 'http://cp.cloudflare.com/generate_204',
+              'timeoutMs': 5000,
+              'cpeHost': '192.168.1.140',
+            });
+            return {
+              'status': 'success',
+              'latencyMs': 123,
+              'checkedAt': '2026-06-04T12:00:00.000',
+            };
+          });
+      final service = MethodChannelTunService(channel: channel);
+
+      final result = await service.probeLatency(LatencyTarget.defaults.first);
+
+      expect(result.status, LatencyProbeStatus.success);
+      expect(result.latencyMs, 123);
+    },
+  );
+
+  test(
     'missing native channel reports unsupported instead of success',
     () async {
       final service = MethodChannelTunService(channel: channel);

@@ -6,6 +6,7 @@ import '../tun/tun_models.dart';
 import 'connections_page.dart';
 import 'dashboard_page.dart';
 import 'help_page.dart';
+import 'latency_page.dart';
 import 'logs_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -30,6 +31,7 @@ class _AppShellState extends State<AppShell> {
   static const _items = [
     _NavMeta('仪表盘', Icons.dashboard_rounded),
     _NavMeta('连接', Icons.hub_rounded),
+    _NavMeta('测速', Icons.speed_rounded),
     _NavMeta('日志', Icons.receipt_long_rounded),
     _NavMeta('设置', Icons.tune_rounded),
     _NavMeta('帮助', Icons.help_rounded),
@@ -43,6 +45,7 @@ class _AppShellState extends State<AppShell> {
         tunController: widget.tunController,
       ),
       ConnectionsPage(tunController: widget.tunController),
+      LatencyPage(tunController: widget.tunController),
       LogsPage(tunController: widget.tunController),
       SettingsPage(
         controller: widget.configController,

@@ -142,6 +142,18 @@ class FakeTunService implements TunService {
     launchAtLogin = enabled;
     return launchAtLogin;
   }
+
+  @override
+  Future<LatencyProbeResult> probeLatency(
+    LatencyTarget target, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    return LatencyProbeResult.success(
+      target: target,
+      latencyMs: target.id == 'cloudflare' ? 123 : 456,
+      checkedAt: DateTime(2026, 6, 4, 12),
+    );
+  }
 }
 
 void main() {
@@ -201,6 +213,17 @@ void main() {
     expect(find.textContaining('11 B/s'), findsWidgets);
     expect(find.textContaining('93.184.216.34:443'), findsOneWidget);
 
+    await tester.tap(find.text('测速'));
+    await tester.pumpAndSettle();
+    expect(find.text('网站测速'), findsOneWidget);
+    expect(find.text('Cloudflare'), findsOneWidget);
+    expect(find.text('全部测速'), findsOneWidget);
+    await tester.tap(find.text('全部测速'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('123 ms'), findsOneWidget);
+
+    await tester.tap(find.text('连接'));
+    await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(ChoiceChip, 'TCP'));
     await tester.pumpAndSettle();
     expect(find.text('example.com'), findsWidgets);

@@ -132,11 +132,13 @@ class TrafficSample {
     required this.at,
     required this.txRate,
     required this.rxRate,
+    this.rttMs,
   });
 
   final DateTime at;
   final int txRate;
   final int rxRate;
+  final int? rttMs;
 
   @override
   bool operator ==(Object other) {
@@ -144,11 +146,158 @@ class TrafficSample {
         other is TrafficSample &&
             other.at == at &&
             other.txRate == txRate &&
-            other.rxRate == rxRate;
+            other.rxRate == rxRate &&
+            other.rttMs == rttMs;
   }
 
   @override
-  int get hashCode => Object.hash(at, txRate, rxRate);
+  int get hashCode => Object.hash(at, txRate, rxRate, rttMs);
+}
+
+enum LatencyProbeStatus { idle, testing, success, timeout, failed }
+
+class LatencyTarget {
+  const LatencyTarget({
+    required this.id,
+    required this.name,
+    required this.url,
+  });
+
+  final String id;
+  final String name;
+  final String url;
+
+  static const defaults = [
+    LatencyTarget(
+      id: 'cloudflare',
+      name: 'Cloudflare',
+      url: 'http://cp.cloudflare.com/generate_204',
+    ),
+    LatencyTarget(
+      id: 'google',
+      name: 'Google',
+      url: 'https://www.google.com/generate_204',
+    ),
+    LatencyTarget(
+      id: 'youtube',
+      name: 'YouTube',
+      url: 'https://www.youtube.com/generate_204',
+    ),
+    LatencyTarget(
+      id: 'github',
+      name: 'GitHub',
+      url: 'https://github.com/favicon.ico',
+    ),
+    LatencyTarget(
+      id: 'openai',
+      name: 'OpenAI',
+      url: 'https://openai.com/favicon.ico',
+    ),
+    LatencyTarget(
+      id: 'apple',
+      name: 'Apple',
+      url: 'https://www.apple.com/library/test/success.html',
+    ),
+  ];
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is LatencyTarget &&
+            other.id == id &&
+            other.name == name &&
+            other.url == url;
+  }
+
+  @override
+  int get hashCode => Object.hash(id, name, url);
+}
+
+class LatencyProbeResult {
+  const LatencyProbeResult({
+    required this.target,
+    required this.status,
+    required this.checkedAt,
+    this.latencyMs,
+    this.error,
+  });
+
+  factory LatencyProbeResult.idle({required LatencyTarget target}) {
+    return LatencyProbeResult(
+      target: target,
+      status: LatencyProbeStatus.idle,
+      checkedAt: DateTime.fromMillisecondsSinceEpoch(0),
+    );
+  }
+
+  factory LatencyProbeResult.testing({
+    required LatencyTarget target,
+    required DateTime checkedAt,
+  }) {
+    return LatencyProbeResult(
+      target: target,
+      status: LatencyProbeStatus.testing,
+      checkedAt: checkedAt,
+    );
+  }
+
+  factory LatencyProbeResult.success({
+    required LatencyTarget target,
+    required int latencyMs,
+    required DateTime checkedAt,
+  }) {
+    return LatencyProbeResult(
+      target: target,
+      status: LatencyProbeStatus.success,
+      latencyMs: latencyMs,
+      checkedAt: checkedAt,
+    );
+  }
+
+  factory LatencyProbeResult.timeout({
+    required LatencyTarget target,
+    required DateTime checkedAt,
+  }) {
+    return LatencyProbeResult(
+      target: target,
+      status: LatencyProbeStatus.timeout,
+      checkedAt: checkedAt,
+      error: 'timeout',
+    );
+  }
+
+  factory LatencyProbeResult.failure({
+    required LatencyTarget target,
+    required DateTime checkedAt,
+    required String error,
+  }) {
+    return LatencyProbeResult(
+      target: target,
+      status: LatencyProbeStatus.failed,
+      checkedAt: checkedAt,
+      error: error,
+    );
+  }
+
+  final LatencyTarget target;
+  final LatencyProbeStatus status;
+  final DateTime checkedAt;
+  final int? latencyMs;
+  final String? error;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is LatencyProbeResult &&
+            other.target == target &&
+            other.status == status &&
+            other.checkedAt == checkedAt &&
+            other.latencyMs == latencyMs &&
+            other.error == error;
+  }
+
+  @override
+  int get hashCode => Object.hash(target, status, checkedAt, latencyMs, error);
 }
 
 class TunEventLog {

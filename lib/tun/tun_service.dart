@@ -1,5 +1,8 @@
 import 'package:flutter/services.dart';
 
+export 'latency_probe.dart';
+
+import 'latency_probe.dart';
 import 'tun_models.dart';
 
 abstract interface class TunService {
@@ -14,16 +17,24 @@ abstract interface class TunService {
   Future<TunStatus> stop();
   Future<bool> launchAtLoginEnabled();
   Future<bool> setLaunchAtLogin(bool enabled);
+  Future<LatencyProbeResult> probeLatency(
+    LatencyTarget target, {
+    Duration timeout = const Duration(seconds: 5),
+  });
 }
 
 class MethodChannelTunService implements TunService {
   MethodChannelTunService({
     MethodChannel? channel,
+    LatencyProbeClient? latencyProbeClient,
     String defaultCpeHost = '192.168.1.140',
   }) : _channel = channel ?? const MethodChannel('sdwan_client/tun'),
+       _latencyProbeClient =
+           latencyProbeClient ?? const DefaultLatencyProbeClient(),
        _cpeHost = defaultCpeHost;
 
   final MethodChannel _channel;
+  final LatencyProbeClient _latencyProbeClient;
   String _cpeHost;
 
   String get defaultCpeHost => _cpeHost;
@@ -224,6 +235,27 @@ class MethodChannelTunService implements TunService {
     }
   }
 
+  @override
+  Future<LatencyProbeResult> probeLatency(
+    LatencyTarget target, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<Object?>('probeLatency', {
+        'id': target.id,
+        'name': target.name,
+        'url': target.url,
+        'timeoutMs': timeout.inMilliseconds,
+        ..._baseArguments(),
+      });
+      return _latencyResultFromMap(target, result);
+    } on MissingPluginException {
+      return _latencyProbeClient.probe(target, timeout: timeout);
+    } on PlatformException {
+      return _latencyProbeClient.probe(target, timeout: timeout);
+    }
+  }
+
   TunStatus _statusFromMap(Object? rawValue) {
     final value = _stringMap(rawValue);
     if (value == null) {
@@ -328,6 +360,40 @@ class MethodChannelTunService implements TunService {
             dnsRedirect: value['dnsRedirect'] as bool? ?? false,
           ),
     ];
+  }
+
+  LatencyProbeResult _latencyResultFromMap(
+    LatencyTarget target,
+    Object? rawValue,
+  ) {
+    final value = _stringMap(rawValue);
+    if (value == null) {
+      return LatencyProbeResult.failure(
+        target: target,
+        checkedAt: DateTime.now(),
+        error: 'invalid latency response',
+      );
+    }
+    final checkedAt =
+        DateTime.tryParse(value['checkedAt']?.toString() ?? '') ??
+        DateTime.now();
+    final status = value['status']?.toString();
+    return switch (status) {
+      'success' => LatencyProbeResult.success(
+        target: target,
+        latencyMs: _intFromValue(value['latencyMs']),
+        checkedAt: checkedAt,
+      ),
+      'timeout' => LatencyProbeResult.timeout(
+        target: target,
+        checkedAt: checkedAt,
+      ),
+      _ => LatencyProbeResult.failure(
+        target: target,
+        checkedAt: checkedAt,
+        error: value['error']?.toString() ?? 'latency probe failed',
+      ),
+    };
   }
 
   int _intFromValue(Object? value) {

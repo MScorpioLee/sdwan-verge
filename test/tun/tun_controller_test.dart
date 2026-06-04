@@ -120,6 +120,19 @@ class FakeTunService implements TunService {
     launchAtLogin = enabled;
     return launchAtLogin;
   }
+
+  @override
+  Future<LatencyProbeResult> probeLatency(
+    LatencyTarget target, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    calls.add('probeLatency:${target.id}');
+    return LatencyProbeResult.success(
+      target: target,
+      latencyMs: 200,
+      checkedAt: DateTime(2026, 6, 4, 12),
+    );
+  }
 }
 
 class FakeDomainResolver implements DomainResolver {
@@ -132,6 +145,24 @@ class FakeDomainResolver implements DomainResolver {
   Future<String?> reverseLookup(String ip) async {
     calls.add(ip);
     return responses[ip];
+  }
+}
+
+class FakeLatencyProbeClient implements LatencyProbeClient {
+  FakeLatencyProbeClient(this.responses);
+
+  final Map<String, LatencyProbeResult> responses;
+
+  @override
+  Future<LatencyProbeResult> probe(
+    LatencyTarget target, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    return responses[target.id] ??
+        LatencyProbeResult.timeout(
+          target: target,
+          checkedAt: DateTime(2026, 6, 4, 12, 0, 1),
+        );
   }
 }
 
@@ -306,6 +337,61 @@ void main() {
       expect(controller.status.cpe.reachable, isTrue);
     },
   );
+
+  test(
+    'changing CPE host while running restarts acceleration with new address',
+    () async {
+      final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          state: TunState.running,
+          permission: TunPermission.ready,
+          helperInstalled: true,
+          cpe: const CpeHealth(
+            host: '192.168.1.140',
+            reachable: true,
+            serviceReady: true,
+          ),
+        ),
+      );
+      final controller = TunController(service: service);
+      await controller.initialize();
+
+      await controller.updateCpeHost('192.168.1.150');
+
+      expect(service.calls, [
+        'status',
+        'updateCpeHost:192.168.1.150',
+        'healthCheck',
+        'stop',
+        'start',
+        'status',
+      ]);
+      expect(controller.status.state, TunState.running);
+      expect(controller.status.cpe.host, '192.168.1.150');
+    },
+  );
+
+  test('testAllLatencyTargets stores site latency results', () async {
+    final service = FakeTunService();
+    final latency = FakeLatencyProbeClient({
+      'cloudflare': LatencyProbeResult.success(
+        target: LatencyTarget.defaults.first,
+        latencyMs: 123,
+        checkedAt: DateTime(2026, 6, 4, 12),
+      ),
+    });
+    final controller = TunController(
+      service: service,
+      latencyProbeClient: latency,
+    );
+
+    await controller.testAllLatencyTargets();
+
+    expect(controller.latencyTesting, isFalse);
+    expect(controller.latencyResults, hasLength(LatencyTarget.defaults.length));
+    expect(controller.latencyResults.first.latencyMs, 123);
+    expect(controller.trafficSamples.last.rttMs, 123);
+  });
 
   test('records bandwidth samples when status is refreshed', () async {
     final service = FakeTunService(

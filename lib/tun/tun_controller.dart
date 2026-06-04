@@ -13,17 +13,21 @@ class TunController extends ChangeNotifier {
     required TunService service,
     TrafficHistoryStore? trafficHistoryStore,
     DomainResolver? domainResolver,
+    LatencyProbeClient? latencyProbeClient,
     bool retainTrafficHistory = false,
     this.failureThreshold = 3,
     this.pollInterval = const Duration(seconds: 5),
     this.startTimeout = const Duration(seconds: 8),
   }) : _service = service,
        _domainResolver = domainResolver ?? const DefaultDomainResolver(),
+       _latencyProbeClient =
+           latencyProbeClient ?? _TunServiceLatencyProbeClient(service),
        _trafficHistoryStore = trafficHistoryStore,
        _retainTrafficHistory = retainTrafficHistory;
 
   final TunService _service;
   final DomainResolver _domainResolver;
+  final LatencyProbeClient _latencyProbeClient;
   final TrafficHistoryStore? _trafficHistoryStore;
   final int failureThreshold;
   final Duration pollInterval;
@@ -46,14 +50,24 @@ class TunController extends ChangeNotifier {
   final Map<String, _ConnectionBaseline> _connectionBaselines = {};
   final Map<String, String> _domainCache = {};
   final Set<String> _domainLookupsInFlight = {};
+  final List<LatencyTarget> _latencyTargets = LatencyTarget.defaults;
+  List<LatencyProbeResult> _latencyResults = [
+    for (final target in LatencyTarget.defaults)
+      LatencyProbeResult.idle(target: target),
+  ];
+  var _latencyTesting = false;
 
   TunStatus get status => _status;
   List<TunEventLog> get logs => _logs;
   List<TunConnection> get connections => _connections;
   List<TrafficSample> get trafficSamples => List.unmodifiable(_trafficSamples);
+  List<LatencyTarget> get latencyTargets => List.unmodifiable(_latencyTargets);
+  List<LatencyProbeResult> get latencyResults =>
+      List.unmodifiable(_latencyResults);
   bool get retainTrafficHistory => _retainTrafficHistory;
   bool get launchAtLogin => _launchAtLogin;
   bool get busy => _busy;
+  bool get latencyTesting => _latencyTesting;
 
   Future<void> initialize() async {
     await _runBusy(() async {
@@ -99,9 +113,28 @@ class TunController extends ChangeNotifier {
       return;
     }
     await _runBusy(() async {
+      final wasRunning = _status.state == TunState.running;
       _service.updateCpeHost(cpeHost);
-      _connections = const [];
       final health = await _service.healthCheck();
+      if (wasRunning) {
+        _status = _status.copyWith(state: TunState.stopping, cpe: health);
+        notifyListeners();
+        await _service.stop();
+        if (!health.reachable) {
+          _status = _status.copyWith(
+            state: TunState.failed,
+            cpe: health,
+            lastError: health.error ?? '新 CPE 连接失败，已停止当前加速',
+          );
+          _stopPolling();
+          _resetConnectionSession();
+          return;
+        }
+        _status = _status.copyWith(state: TunState.starting, cpe: health);
+        notifyListeners();
+        await _service.start();
+      }
+      _resetConnectionSession();
       final refreshed = _withDisplayTraffic(await _service.status());
       _status = refreshed.copyWith(cpe: health);
       _recordTrafficSample(_status.traffic);
@@ -196,6 +229,53 @@ class TunController extends ChangeNotifier {
     unawaited(_enrichMissingDomains(_connections));
   }
 
+  Future<void> testLatencyTarget(LatencyTarget target) async {
+    _latencyResults = [
+      for (final result in _latencyResults)
+        result.target.id == target.id
+            ? LatencyProbeResult.testing(
+                target: target,
+                checkedAt: DateTime.now(),
+              )
+            : result,
+    ];
+    notifyListeners();
+
+    final result = await _latencyProbeClient.probe(target);
+    _latencyResults = [
+      for (final item in _latencyResults)
+        item.target.id == target.id ? result : item,
+    ];
+    _recordTrafficSample(_status.traffic);
+    notifyListeners();
+  }
+
+  Future<void> testAllLatencyTargets() async {
+    if (_latencyTesting) {
+      return;
+    }
+    _latencyTesting = true;
+    _latencyResults = [
+      for (final target in _latencyTargets)
+        LatencyProbeResult.testing(target: target, checkedAt: DateTime.now()),
+    ];
+    notifyListeners();
+    try {
+      final results = await Future.wait([
+        for (final target in _latencyTargets) _latencyProbeClient.probe(target),
+      ]);
+      final byId = {for (final result in results) result.target.id: result};
+      _latencyResults = [
+        for (final target in _latencyTargets)
+          byId[target.id] ?? LatencyProbeResult.idle(target: target),
+      ];
+      _recordTrafficSample(_status.traffic);
+    } finally {
+      _latencyTesting = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> installHelper() async {
     await _runBusy(() async {
       _status = await _service.installHelper();
@@ -274,6 +354,7 @@ class TunController extends ChangeNotifier {
         at: DateTime.now(),
         txRate: traffic.txRate,
         rxRate: traffic.rxRate,
+        rttMs: _averageLatencyMs(),
       ),
     );
     if (_trafficSamples.length > 120) {
@@ -283,6 +364,19 @@ class TunController extends ChangeNotifier {
     if (_retainTrafficHistory && store != null) {
       unawaited(store.save(_trafficSamples));
     }
+  }
+
+  int? _averageLatencyMs() {
+    final values = [
+      for (final result in _latencyResults)
+        if (result.status == LatencyProbeStatus.success &&
+            result.latencyMs != null)
+          result.latencyMs!,
+    ];
+    if (values.isEmpty) {
+      return null;
+    }
+    return (values.reduce((a, b) => a + b) / values.length).round();
   }
 
   TunStatus _withDisplayTraffic(TunStatus status) {
@@ -452,6 +546,20 @@ class TunController extends ChangeNotifier {
   void dispose() {
     _stopPolling();
     super.dispose();
+  }
+}
+
+class _TunServiceLatencyProbeClient implements LatencyProbeClient {
+  const _TunServiceLatencyProbeClient(this.service);
+
+  final TunService service;
+
+  @override
+  Future<LatencyProbeResult> probe(
+    LatencyTarget target, {
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    return service.probeLatency(target, timeout: timeout);
   }
 }
 

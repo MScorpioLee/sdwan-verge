@@ -14,6 +14,7 @@ void main() {
       at: DateTime(2026, 6, 4, 12),
       txRate: 12,
       rxRate: 34,
+      rttMs: 188,
     );
 
     await repository.save([sample]);

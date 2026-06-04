@@ -42,6 +42,7 @@ class TrafficHistoryRepository implements TrafficHistoryStore {
             at: at,
             txRate: _intFromValue(map['txRate']),
             rxRate: _intFromValue(map['rxRate']),
+            rttMs: _nullableIntFromValue(map['rttMs']),
           ),
         );
       }
@@ -65,6 +66,7 @@ class TrafficHistoryRepository implements TrafficHistoryStore {
           'at': sample.at.toIso8601String(),
           'txRate': sample.txRate,
           'rxRate': sample.rxRate,
+          if (sample.rttMs != null) 'rttMs': sample.rttMs,
         },
     ];
     await prefs.setString(storageKey, jsonEncode(payload));
@@ -78,5 +80,12 @@ class TrafficHistoryRepository implements TrafficHistoryStore {
       return value.round();
     }
     return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  int? _nullableIntFromValue(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    return _intFromValue(value);
   }
 }

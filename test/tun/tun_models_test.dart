@@ -49,4 +49,42 @@ void main() {
     expect(updated.adapterName, 'Windows Wintun');
     expect(status.adapterName, 'TUN 虚拟网卡');
   });
+
+  test('latency results expose success timeout and failure state', () {
+    const target = LatencyTarget(
+      id: 'github',
+      name: 'GitHub',
+      url: 'https://github.com/favicon.ico',
+    );
+    final at = DateTime(2026, 6, 4, 12);
+
+    final success = LatencyProbeResult.success(
+      target: target,
+      latencyMs: 188,
+      checkedAt: at,
+    );
+    final timeout = LatencyProbeResult.timeout(target: target, checkedAt: at);
+    final failure = LatencyProbeResult.failure(
+      target: target,
+      checkedAt: at,
+      error: 'network unreachable',
+    );
+
+    expect(success.status, LatencyProbeStatus.success);
+    expect(success.latencyMs, 188);
+    expect(timeout.status, LatencyProbeStatus.timeout);
+    expect(failure.status, LatencyProbeStatus.failed);
+    expect(failure.error, 'network unreachable');
+  });
+
+  test('traffic samples can carry measured RTT', () {
+    final sample = TrafficSample(
+      at: DateTime(2026, 6, 4, 12),
+      txRate: 12,
+      rxRate: 34,
+      rttMs: 188,
+    );
+
+    expect(sample.rttMs, 188);
+  });
 }
