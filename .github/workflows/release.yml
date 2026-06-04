@@ -115,7 +115,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
+          cache: false
       - run: flutter --version
       - run: flutter pub get
       - shell: pwsh
