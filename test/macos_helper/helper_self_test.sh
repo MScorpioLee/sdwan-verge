@@ -14,3 +14,8 @@ grep -q "/sbin/route -n add -host 192.168.1.140 -interface en0" <<<"$PLAN_OUTPUT
 grep -q "/sbin/route -n add 0.0.0.0/1 -interface utun9" <<<"$PLAN_OUTPUT"
 grep -q "/sbin/route -n add 128.0.0.0/1 -interface utun9" <<<"$PLAN_OUTPUT"
 grep -q "PLAN_ONLY_NO_CHANGES_APPLIED" <<<"$PLAN_OUTPUT"
+
+/usr/libexec/PlistBuddy -c "Print :com.apple.security.network.client" \
+  "$ROOT_DIR/macos/Runner/Release.entitlements" | grep -q "true"
+/usr/libexec/PlistBuddy -c "Print :com.apple.security.network.client" \
+  "$ROOT_DIR/macos/Runner/DebugProfile.entitlements" | grep -q "true"
