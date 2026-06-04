@@ -1,11 +1,16 @@
 import 'sdwan_profile.dart';
 
 class AppConfig {
-  const AppConfig({required this.activeProfileId, required this.profiles});
+  const AppConfig({
+    required this.activeProfileId,
+    required this.profiles,
+    this.retainTrafficHistory = false,
+  });
 
   factory AppConfig.defaults() => AppConfig(
     activeProfileId: 'default',
     profiles: [SdwanProfile.defaults()],
+    retainTrafficHistory: false,
   );
 
   factory AppConfig.fromJson(Map<String, Object?> json) {
@@ -31,11 +36,13 @@ class AppConfig {
     return AppConfig(
       activeProfileId: hasActive ? requestedActive : resolvedProfiles.first.id,
       profiles: resolvedProfiles,
+      retainTrafficHistory: json['retainTrafficHistory'] as bool? ?? false,
     );
   }
 
   final String activeProfileId;
   final List<SdwanProfile> profiles;
+  final bool retainTrafficHistory;
 
   SdwanProfile get activeProfile => profiles.firstWhere(
     (profile) => profile.id == activeProfileId,
@@ -45,12 +52,18 @@ class AppConfig {
   Map<String, Object?> toJson() => {
     'activeProfileId': activeProfileId,
     'profiles': profiles.map((profile) => profile.toJson()).toList(),
+    'retainTrafficHistory': retainTrafficHistory,
   };
 
-  AppConfig copyWith({String? activeProfileId, List<SdwanProfile>? profiles}) {
+  AppConfig copyWith({
+    String? activeProfileId,
+    List<SdwanProfile>? profiles,
+    bool? retainTrafficHistory,
+  }) {
     return AppConfig(
       activeProfileId: activeProfileId ?? this.activeProfileId,
       profiles: profiles ?? this.profiles,
+      retainTrafficHistory: retainTrafficHistory ?? this.retainTrafficHistory,
     );
   }
 }

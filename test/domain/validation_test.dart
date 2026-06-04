@@ -28,4 +28,10 @@ void main() {
   test('valid default profile has no validation errors', () {
     expect(validateProfile(SdwanProfile.defaults()), isEmpty);
   });
+
+  test('company name is optional', () {
+    final profile = SdwanProfile.defaults().copyWith(companyName: '');
+
+    expect(validateProfile(profile), isEmpty);
+  });
 }

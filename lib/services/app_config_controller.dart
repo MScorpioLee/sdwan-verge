@@ -39,4 +39,14 @@ class AppConfigController extends ChangeNotifier {
     notifyListeners();
     return const ConfigControllerResult(success: true, message: '配置已保存');
   }
+
+  Future<ConfigControllerResult> setRetainTrafficHistory(bool retain) async {
+    _config = _config.copyWith(retainTrafficHistory: retain);
+    await configStore.save(_config);
+    notifyListeners();
+    return ConfigControllerResult(
+      success: true,
+      message: retain ? '已开启历史流量统计保留' : '已关闭历史流量统计保留',
+    );
+  }
 }

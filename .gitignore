@@ -1,6 +1,7 @@
 .superpowers/
 .dart_tool/
 build/
+dist/
 .flutter-plugins
 .flutter-plugins-dependencies
 .metadata

@@ -21,4 +21,22 @@ void main() {
     expect(updated.state, TunState.running);
     expect(updated.cpe, status.cpe);
   });
+
+  test('copyWith preserves traffic statistics unless replaced', () {
+    final status = TunStatus.defaults().copyWith(
+      traffic: const TrafficStats(
+        txBytes: 1200,
+        rxBytes: 3400,
+        txRate: 56,
+        rxRate: 78,
+      ),
+    );
+
+    final updated = status.copyWith(state: TunState.running);
+
+    expect(updated.traffic.txBytes, 1200);
+    expect(updated.traffic.rxBytes, 3400);
+    expect(updated.traffic.txRate, 56);
+    expect(updated.traffic.rxRate, 78);
+  });
 }

@@ -8,7 +8,7 @@ mkdir -p "$DIST_DIR"
 
 package_macos() {
   local app_path="$ROOT_DIR/build/macos/Build/Products/Release/SD-WAN Verge.app"
-  local out_path="$DIST_DIR/sdwan-verge-macos-arm64-release.zip"
+  local out_path="$DIST_DIR/sdwan-verge-macos-release.zip"
   if [[ -d "$app_path" ]]; then
     local helper_path
     helper_path="$("$ROOT_DIR/scripts/build_macos_helper.sh")"

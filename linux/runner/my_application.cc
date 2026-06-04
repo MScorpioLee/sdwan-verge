@@ -18,9 +18,25 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 static constexpr char kTunChannelName[] = "sdwan_client/tun";
 static constexpr char kDefaultCpeHost[] = "192.168.1.140";
 
-static FlValue* unavailable_health() {
+static const gchar* cpe_host_from_call(FlMethodCall* method_call) {
+  FlValue* args = fl_method_call_get_args(method_call);
+  if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_MAP) {
+    return kDefaultCpeHost;
+  }
+  FlValue* value = fl_value_lookup_string(args, "cpeHost");
+  if (value == nullptr || fl_value_get_type(value) != FL_VALUE_TYPE_STRING) {
+    return kDefaultCpeHost;
+  }
+  const gchar* host = fl_value_get_string(value);
+  if (host == nullptr || host[0] == '\0') {
+    return kDefaultCpeHost;
+  }
+  return host;
+}
+
+static FlValue* unavailable_health(const gchar* host) {
   FlValue* value = fl_value_new_map();
-  fl_value_set_string_take(value, "host", fl_value_new_string(kDefaultCpeHost));
+  fl_value_set_string_take(value, "host", fl_value_new_string(host));
   fl_value_set_string_take(value, "reachable", fl_value_new_bool(FALSE));
   fl_value_set_string_take(value, "serviceReady", fl_value_new_bool(FALSE));
   fl_value_set_string_take(
@@ -31,12 +47,18 @@ static FlValue* unavailable_health() {
 
 static FlValue* unsupported_status(
     const gchar* state = "stopped",
-    const gchar* message = "Linux /dev/net/tun backend is not wired yet") {
+    const gchar* message = "Linux /dev/net/tun backend is not wired yet",
+    const gchar* host = kDefaultCpeHost) {
   FlValue* value = fl_value_new_map();
   fl_value_set_string_take(value, "state", fl_value_new_string(state));
   fl_value_set_string_take(value, "permission",
                            fl_value_new_string("unsupported"));
-  fl_value_set_string_take(value, "cpe", unavailable_health());
+  fl_value_set_string_take(value, "cpe", unavailable_health(host));
+  fl_value_set_string_take(value, "helperInstalled", fl_value_new_bool(FALSE));
+  fl_value_set_string_take(value, "txBytes", fl_value_new_int(0));
+  fl_value_set_string_take(value, "rxBytes", fl_value_new_int(0));
+  fl_value_set_string_take(value, "txRate", fl_value_new_int(0));
+  fl_value_set_string_take(value, "rxRate", fl_value_new_int(0));
   fl_value_set_string_take(value, "lastError", fl_value_new_string(message));
   return value;
 }
@@ -45,20 +67,39 @@ static void tun_method_call_cb(FlMethodChannel* channel,
                                FlMethodCall* method_call,
                                gpointer user_data) {
   const gchar* method = fl_method_call_get_name(method_call);
+  const gchar* host = cpe_host_from_call(method_call);
   g_autoptr(FlMethodResponse) response = nullptr;
 
   if (g_strcmp0(method, "status") == 0) {
-    g_autoptr(FlValue) result = unsupported_status();
+    g_autoptr(FlValue) result = unsupported_status(
+        "stopped", "Linux /dev/net/tun backend is not wired yet", host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "healthCheck") == 0) {
-    g_autoptr(FlValue) result = unavailable_health();
+    g_autoptr(FlValue) result = unavailable_health(host);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "logs") == 0 ||
+             g_strcmp0(method, "connections") == 0) {
+    g_autoptr(FlValue) result = fl_value_new_list();
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "installHelper") == 0) {
+    g_autoptr(FlValue) result = unsupported_status(
+        "failed", "Linux /dev/net/tun backend is not wired yet", host);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "uninstallHelper") == 0) {
+    g_autoptr(FlValue) result = unsupported_status(
+        "stopped", "Linux /dev/net/tun backend is not wired yet", host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "start") == 0) {
     g_autoptr(FlValue) result = unsupported_status(
-        "failed", "Linux /dev/net/tun backend is not wired yet");
+        "failed", "Linux /dev/net/tun backend is not wired yet", host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "stop") == 0) {
-    g_autoptr(FlValue) result = unsupported_status();
+    g_autoptr(FlValue) result = unsupported_status(
+        "stopped", "Linux /dev/net/tun backend is not wired yet", host);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "launchAtLoginStatus") == 0 ||
+             g_strcmp0(method, "setLaunchAtLogin") == 0) {
+    g_autoptr(FlValue) result = fl_value_new_bool(FALSE);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());

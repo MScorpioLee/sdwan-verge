@@ -1,61 +1,154 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-import '../services/sdwan_controller.dart';
+import '../tun/tun_controller.dart';
+import 'theme.dart';
 
-class LogsPage extends StatelessWidget {
-  const LogsPage({super.key, required this.controller});
+class LogsPage extends StatefulWidget {
+  const LogsPage({super.key, required this.tunController});
 
-  final SdwanController controller;
+  final TunController tunController;
+
+  @override
+  State<LogsPage> createState() => _LogsPageState();
+}
+
+class _LogsPageState extends State<LogsPage> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.tunController.refreshLogs();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: controller,
+      animation: widget.tunController,
       builder: (context, _) {
-        final logs = controller.logs;
+        final logs = widget.tunController.logs;
         return ListView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(28),
           children: [
             Row(
               children: [
-                Text('日志', style: Theme.of(context).textTheme.headlineMedium),
+                const Text(
+                  '事件日志',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
                 const Spacer(),
-                IconButton.filledTonal(
-                  tooltip: '复制日志',
-                  onPressed: logs.isEmpty
-                      ? null
-                      : () => Clipboard.setData(
-                          ClipboardData(
-                            text: logs
-                                .map(
-                                  (log) =>
-                                      '${log.displayTime} ${log.action} ${log.success ? '成功' : '失败'} ${log.message}',
-                                )
-                                .join('\n'),
-                          ),
-                        ),
-                  icon: const Icon(Icons.copy),
+                IconButton(
+                  onPressed: widget.tunController.refreshLogs,
+                  icon: const Icon(Icons.refresh_rounded),
+                  color: AppColors.textSecondary,
+                  tooltip: '刷新日志',
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            if (logs.isEmpty) const Text('暂无操作日志'),
-            for (final log in logs)
-              ListTile(
-                leading: Icon(log.success ? Icons.check_circle : Icons.error),
-                title: Text('${log.displayTime} ${log.action}'),
-                subtitle: Text(
-                  [
-                    log.message,
-                    if (log.command != null) '命令：${log.command}',
-                    if (log.exitCode != null) '退出码：${log.exitCode}',
-                  ].join('\n'),
-                ),
-              ),
+            const SizedBox(height: 18),
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: panelDecoration(),
+              child: logs.isEmpty
+                  ? const _EmptyLog()
+                  : Column(
+                      children: [
+                        for (var i = 0; i < logs.length; i++)
+                          _LogTile(
+                            time: logs[i].time,
+                            message: logs[i].message,
+                            isLast: i == logs.length - 1,
+                          ),
+                      ],
+                    ),
+            ),
           ],
         );
       },
+    );
+  }
+}
+
+class _EmptyLog extends StatelessWidget {
+  const _EmptyLog();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 28),
+      child: Center(
+        child: Text(
+          '暂无事件',
+          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogTile extends StatelessWidget {
+  const _LogTile({
+    required this.time,
+    required this.message,
+    required this.isLast,
+  });
+
+  final String time;
+  final String message;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Column(
+          children: [
+            Container(
+              width: 10,
+              height: 10,
+              margin: const EdgeInsets.only(top: 5),
+              decoration: const BoxDecoration(
+                color: AppColors.primary,
+                shape: BoxShape.circle,
+              ),
+            ),
+            if (!isLast)
+              Container(width: 1, height: 42, color: AppColors.border),
+          ],
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  message,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  time,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -1,32 +1,44 @@
-# SD-WAN Client
+# SD-WAN Verge
 
-Flutter multi-platform client for the SD-WAN acceleration workflow currently represented by the BAT script in this directory.
+Flutter multi-platform client for the CPE-based SD-WAN acceleration workflow.
 
-## First Release Scope
+## Current Platform Status
 
-- Windows desktop is the primary supported platform.
-- Windows can add and remove the acceleration routes from the original BAT script.
-- Windows can set or restore DNS on the active network interface.
-- macOS, Web, iOS, Android, and Linux launch with platform capability messaging.
+- macOS: real TUN-first CPE acceleration backend is wired through `sdwan-macos-helper`.
+- Windows: Flutter shell and native channel are build-ready; real Wintun/service backend is still pending.
+- Linux: Flutter shell and native channel are build-ready; real `/dev/net/tun` helper is still pending.
+- Android: Flutter shell and native channel are build-ready; real `VpnService` backend is still pending.
+- iOS: Flutter shell and native channel are build-ready; real Packet Tunnel extension and signing entitlements are still pending.
+- Web: build artifact for UI preview only; it cannot own a system TUN device.
+
+Non-macOS platforms intentionally return `unsupported` until their real packet backends are implemented. This avoids a false "accelerated" state that would black-hole traffic.
 
 ## Default Configuration
 
-- Company: 宁波市富金园艺灌溉设备有限公司
 - CPE gateway: `192.168.1.140`
-- Primary DNS: `223.5.5.5`
-- Secondary DNS: `114.114.114.114`
+- TUN mode only; route/DNS command mode is no longer the primary path.
 
-## Development
+## Local Development
 
 ```bash
 flutter pub get
-flutter test
 flutter analyze
-flutter build macos --debug
+flutter test
+bash test/macos_helper/helper_self_test.sh
+flutter build macos --release
 ```
 
-Run Windows manual acceptance on a Windows machine:
+## Release Builds
 
-```text
-docs/windows-manual-acceptance.md
-```
+GitHub Actions workflow: `.github/workflows/release.yml`
+
+It can be triggered manually with `workflow_dispatch` or by pushing a tag named `v*`. It uploads:
+
+- `sdwan-verge-macos-release.zip`
+- `sdwan-verge-windows-x64-release.zip`
+- `sdwan-verge-linux-x64-release.tar.gz`
+- `sdwan-verge-android-arm64-release.apk`
+- `sdwan-verge-ios-release-unsigned.zip`
+- `sdwan-verge-web-release.zip`
+
+iOS output is unsigned and is not directly installable on devices without Apple signing assets.

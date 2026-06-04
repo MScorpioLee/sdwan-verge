@@ -9,11 +9,12 @@ void main() {
 
     expect(config.activeProfileId, 'default');
     expect(config.profiles, hasLength(1));
-    expect(active.companyName, '宁波市富金园艺灌溉设备有限公司');
+    expect(active.companyName, isEmpty);
     expect(active.cpeIp, '192.168.1.140');
     expect(active.primaryDns, '223.5.5.5');
     expect(active.secondaryDns, '114.114.114.114');
     expect(active.syncDnsWithAcceleration, isFalse);
+    expect(config.retainTrafficHistory, isFalse);
   });
 
   test('serializes and deserializes app config', () {
@@ -24,11 +25,13 @@ void main() {
           syncDnsWithAcceleration: true,
         ),
       ],
+      retainTrafficHistory: true,
     );
 
     final restored = AppConfig.fromJson(config.toJson());
 
     expect(restored.activeProfile.cpeIp, '10.0.0.1');
     expect(restored.activeProfile.syncDnsWithAcceleration, isTrue);
+    expect(restored.retainTrafficHistory, isTrue);
   });
 }

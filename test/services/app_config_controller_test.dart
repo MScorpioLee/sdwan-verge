@@ -29,4 +29,16 @@ void main() {
     expect(controller.config.activeProfile.cpeIp, '192.168.1.150');
     expect(store.config.activeProfile.cpeIp, '192.168.1.150');
   });
+
+  test('saves traffic history retention preference', () async {
+    final store = MemoryConfigStore();
+    final controller = AppConfigController(configStore: store);
+
+    await controller.initialize();
+    final result = await controller.setRetainTrafficHistory(true);
+
+    expect(result.success, isTrue);
+    expect(controller.config.retainTrafficHistory, isTrue);
+    expect(store.config.retainTrafficHistory, isTrue);
+  });
 }

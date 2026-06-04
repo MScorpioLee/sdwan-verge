@@ -4,6 +4,7 @@
 
 #include <optional>
 #include <string>
+#include <variant>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -11,9 +12,32 @@ namespace {
 constexpr char kTunChannelName[] = "sdwan_client/tun";
 constexpr char kDefaultCpeHost[] = "192.168.1.140";
 
-flutter::EncodableValue UnavailableHealth() {
+std::string CpeHostFromArgs(const flutter::EncodableValue* args) {
+  if (!args) {
+    return kDefaultCpeHost;
+  }
+  const auto* map = std::get_if<flutter::EncodableMap>(args);
+  if (!map) {
+    return kDefaultCpeHost;
+  }
+  const auto entry = map->find(flutter::EncodableValue("cpeHost"));
+  if (entry == map->end()) {
+    return kDefaultCpeHost;
+  }
+  const auto* host = std::get_if<std::string>(&entry->second);
+  if (!host || host->empty()) {
+    return kDefaultCpeHost;
+  }
+  return *host;
+}
+
+flutter::EncodableValue EmptyList() {
+  return flutter::EncodableValue(flutter::EncodableList{});
+}
+
+flutter::EncodableValue UnavailableHealth(const std::string& host) {
   return flutter::EncodableValue(flutter::EncodableMap{
-      {flutter::EncodableValue("host"), flutter::EncodableValue(kDefaultCpeHost)},
+      {flutter::EncodableValue("host"), flutter::EncodableValue(host)},
       {flutter::EncodableValue("reachable"), flutter::EncodableValue(false)},
       {flutter::EncodableValue("serviceReady"), flutter::EncodableValue(false)},
       {flutter::EncodableValue("error"),
@@ -23,12 +47,18 @@ flutter::EncodableValue UnavailableHealth() {
 
 flutter::EncodableValue UnsupportedStatus(
     const std::string& state = "stopped",
-    const std::string& message = "Windows Wintun backend is not wired yet") {
+    const std::string& message = "Windows Wintun backend is not wired yet",
+    const std::string& host = kDefaultCpeHost) {
   return flutter::EncodableValue(flutter::EncodableMap{
       {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
       {flutter::EncodableValue("permission"),
        flutter::EncodableValue("unsupported")},
-      {flutter::EncodableValue("cpe"), UnavailableHealth()},
+      {flutter::EncodableValue("cpe"), UnavailableHealth(host)},
+      {flutter::EncodableValue("helperInstalled"), flutter::EncodableValue(false)},
+      {flutter::EncodableValue("txBytes"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("rxBytes"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("txRate"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("rxRate"), flutter::EncodableValue(0)},
       {flutter::EncodableValue("lastError"), flutter::EncodableValue(message)},
   });
 }
@@ -61,15 +91,32 @@ bool FlutterWindow::OnCreate() {
           &flutter::StandardMethodCodec::GetInstance());
   tun_channel_->SetMethodCallHandler([](const auto& call, auto result) {
     const std::string& method = call.method_name();
+    const std::string host = CpeHostFromArgs(call.arguments());
     if (method == "status") {
-      result->Success(UnsupportedStatus());
+      result->Success(UnsupportedStatus("stopped",
+                                        "Windows Wintun backend is not wired yet",
+                                        host));
     } else if (method == "healthCheck") {
-      result->Success(UnavailableHealth());
+      result->Success(UnavailableHealth(host));
+    } else if (method == "logs" || method == "connections") {
+      result->Success(EmptyList());
+    } else if (method == "installHelper") {
+      result->Success(UnsupportedStatus(
+          "failed", "Windows Wintun backend is not wired yet", host));
+    } else if (method == "uninstallHelper") {
+      result->Success(UnsupportedStatus("stopped",
+                                        "Windows Wintun backend is not wired yet",
+                                        host));
     } else if (method == "start") {
       result->Success(UnsupportedStatus(
-          "failed", "Windows Wintun backend is not wired yet"));
+          "failed", "Windows Wintun backend is not wired yet", host));
     } else if (method == "stop") {
-      result->Success(UnsupportedStatus());
+      result->Success(UnsupportedStatus("stopped",
+                                        "Windows Wintun backend is not wired yet",
+                                        host));
+    } else if (method == "launchAtLoginStatus" ||
+               method == "setLaunchAtLogin") {
+      result->Success(flutter::EncodableValue(false));
     } else {
       result->NotImplemented();
     }

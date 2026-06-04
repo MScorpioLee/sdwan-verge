@@ -12,7 +12,7 @@ class SdwanProfile {
   factory SdwanProfile.defaults() => const SdwanProfile(
     id: 'default',
     name: '默认加速配置',
-    companyName: '宁波市富金园艺灌溉设备有限公司',
+    companyName: '',
     cpeIp: '192.168.1.140',
     primaryDns: '223.5.5.5',
     secondaryDns: '114.114.114.114',
@@ -22,7 +22,7 @@ class SdwanProfile {
   factory SdwanProfile.fromJson(Map<String, Object?> json) => SdwanProfile(
     id: json['id'] as String? ?? 'default',
     name: json['name'] as String? ?? '默认加速配置',
-    companyName: json['companyName'] as String? ?? '宁波市富金园艺灌溉设备有限公司',
+    companyName: json['companyName'] as String? ?? '',
     cpeIp: json['cpeIp'] as String? ?? '192.168.1.140',
     primaryDns: json['primaryDns'] as String? ?? '223.5.5.5',
     secondaryDns: json['secondaryDns'] as String? ?? '114.114.114.114',

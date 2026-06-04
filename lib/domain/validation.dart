@@ -19,9 +19,6 @@ bool isValidIpv4(String value) {
 
 List<String> validateProfile(SdwanProfile profile) {
   final errors = <String>[];
-  if (profile.companyName.trim().isEmpty) {
-    errors.add('公司名称不能为空');
-  }
   if (!isValidIpv4(profile.cpeIp)) {
     errors.add('CPE 网关地址格式不正确');
   }

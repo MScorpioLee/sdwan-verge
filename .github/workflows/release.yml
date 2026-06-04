@@ -6,28 +6,64 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: release-builds-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  macos-ios:
-    runs-on: macos-15
+  checks:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
+      - run: flutter --version
       - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  macos:
+    runs-on: macos-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - run: flutter pub get
+      - run: bash test/macos_helper/helper_self_test.sh
       - run: flutter build macos --release
+      - run: bash scripts/package_releases.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-macos
+          path: dist/releases/sdwan-verge-macos-release.zip
+
+  ios:
+    runs-on: macos-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - run: flutter pub get
       - run: flutter build ios --release --no-codesign
       - run: bash scripts/package_releases.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: sdwan-verge-macos-ios
-          path: |
-            dist/releases/sdwan-verge-macos-arm64-release.zip
-            dist/releases/sdwan-verge-ios-release-unsigned.zip
+          name: sdwan-verge-ios-unsigned
+          path: dist/releases/sdwan-verge-ios-release-unsigned.zip
 
   android:
     runs-on: ubuntu-24.04
+    needs: checks
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -38,6 +74,7 @@ jobs:
         with:
           channel: stable
           cache: true
+      - run: flutter --version
       - run: flutter pub get
       - run: flutter build apk --release --target-platform android-arm64
       - run: bash scripts/package_releases.sh
@@ -46,8 +83,9 @@ jobs:
           name: sdwan-verge-android
           path: dist/releases/sdwan-verge-android-arm64-release.apk
 
-  linux-web:
+  linux:
     runs-on: ubuntu-24.04
+    needs: checks
     steps:
       - uses: actions/checkout@v4
       - run: |
@@ -57,25 +95,25 @@ jobs:
         with:
           channel: stable
           cache: true
+      - run: flutter --version
       - run: flutter pub get
       - run: flutter build linux --release
-      - run: flutter build web
       - run: bash scripts/package_releases.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: sdwan-verge-linux-web
-          path: |
-            dist/releases/sdwan-verge-linux-x64-release.tar.gz
-            dist/releases/sdwan-verge-web-release.zip
+          name: sdwan-verge-linux
+          path: dist/releases/sdwan-verge-linux-x64-release.tar.gz
 
   windows:
-    runs-on: windows-2025
+    runs-on: windows-latest
+    needs: checks
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
+      - run: flutter --version
       - run: flutter pub get
       - run: flutter build windows --release
       - shell: pwsh
@@ -89,3 +127,21 @@ jobs:
         with:
           name: sdwan-verge-windows
           path: dist/releases/sdwan-verge-windows-x64-release.zip
+
+  web:
+    runs-on: ubuntu-24.04
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - run: flutter pub get
+      - run: flutter build web
+      - run: bash scripts/package_releases.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-web
+          path: dist/releases/sdwan-verge-web-release.zip

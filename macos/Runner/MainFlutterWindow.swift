@@ -9,6 +9,9 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
+      appDelegate.registerTunChannel(controller: flutterViewController)
+    }
 
     super.awakeFromNib()
   }

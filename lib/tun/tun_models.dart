@@ -12,6 +12,133 @@ enum TunPermission {
 
 const _unset = Object();
 
+class TrafficStats {
+  const TrafficStats({
+    this.txBytes = 0,
+    this.rxBytes = 0,
+    this.txRate = 0,
+    this.rxRate = 0,
+  });
+
+  final int txBytes;
+  final int rxBytes;
+  final int txRate;
+  final int rxRate;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is TrafficStats &&
+            other.txBytes == txBytes &&
+            other.rxBytes == rxBytes &&
+            other.txRate == txRate &&
+            other.rxRate == rxRate;
+  }
+
+  @override
+  int get hashCode => Object.hash(txBytes, rxBytes, txRate, rxRate);
+}
+
+class TunConnection {
+  const TunConnection({
+    required this.lastSeen,
+    required this.proto,
+    required this.source,
+    required this.target,
+    this.domain,
+    required this.via,
+    required this.txBytes,
+    required this.rxBytes,
+    this.txRate = 0,
+    this.rxRate = 0,
+    this.dnsRedirect = false,
+  });
+
+  final String lastSeen;
+  final String proto;
+  final String source;
+  final String target;
+  final String? domain;
+  final String via;
+  final int txBytes;
+  final int rxBytes;
+  final int txRate;
+  final int rxRate;
+  final bool dnsRedirect;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is TunConnection &&
+            other.lastSeen == lastSeen &&
+            other.proto == proto &&
+            other.source == source &&
+            other.target == target &&
+            other.domain == domain &&
+            other.via == via &&
+            other.txBytes == txBytes &&
+            other.rxBytes == rxBytes &&
+            other.txRate == txRate &&
+            other.rxRate == rxRate &&
+            other.dnsRedirect == dnsRedirect;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    lastSeen,
+    proto,
+    source,
+    target,
+    domain,
+    via,
+    txBytes,
+    rxBytes,
+    txRate,
+    rxRate,
+    dnsRedirect,
+  );
+}
+
+class TrafficSample {
+  const TrafficSample({
+    required this.at,
+    required this.txRate,
+    required this.rxRate,
+  });
+
+  final DateTime at;
+  final int txRate;
+  final int rxRate;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is TrafficSample &&
+            other.at == at &&
+            other.txRate == txRate &&
+            other.rxRate == rxRate;
+  }
+
+  @override
+  int get hashCode => Object.hash(at, txRate, rxRate);
+}
+
+class TunEventLog {
+  const TunEventLog({required this.time, required this.message});
+
+  final String time;
+  final String message;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is TunEventLog && other.time == time && other.message == message;
+  }
+
+  @override
+  int get hashCode => Object.hash(time, message);
+}
+
 class CpeHealth {
   const CpeHealth({
     required this.host,
@@ -65,6 +192,8 @@ class TunStatus {
     required this.state,
     required this.permission,
     required this.cpe,
+    this.helperInstalled = false,
+    this.traffic = const TrafficStats(),
     this.lastError,
   });
 
@@ -81,6 +210,8 @@ class TunStatus {
   final TunState state;
   final TunPermission permission;
   final CpeHealth cpe;
+  final bool helperInstalled;
+  final TrafficStats traffic;
   final String? lastError;
 
   TunStatus copyWith({
@@ -88,6 +219,8 @@ class TunStatus {
     TunState? state,
     TunPermission? permission,
     CpeHealth? cpe,
+    bool? helperInstalled,
+    TrafficStats? traffic,
     Object? lastError = _unset,
   }) {
     return TunStatus(
@@ -95,6 +228,8 @@ class TunStatus {
       state: state ?? this.state,
       permission: permission ?? this.permission,
       cpe: cpe ?? this.cpe,
+      helperInstalled: helperInstalled ?? this.helperInstalled,
+      traffic: traffic ?? this.traffic,
       lastError: lastError == _unset ? this.lastError : lastError as String?,
     );
   }
@@ -107,9 +242,19 @@ class TunStatus {
             other.state == state &&
             other.permission == permission &&
             other.cpe == cpe &&
+            other.helperInstalled == helperInstalled &&
+            other.traffic == traffic &&
             other.lastError == lastError;
   }
 
   @override
-  int get hashCode => Object.hash(mode, state, permission, cpe, lastError);
+  int get hashCode => Object.hash(
+    mode,
+    state,
+    permission,
+    cpe,
+    helperInstalled,
+    traffic,
+    lastError,
+  );
 }
