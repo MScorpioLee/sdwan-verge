@@ -2,6 +2,20 @@ name: release-builds
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build for manual runs'
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - windows
+          - macos
+          - ios
+          - android
+          - linux
+          - web
   push:
     tags:
       - 'v*'
@@ -30,6 +44,7 @@ jobs:
   macos:
     runs-on: macos-latest
     needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -49,6 +64,7 @@ jobs:
   ios:
     runs-on: macos-latest
     needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ios' }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -67,6 +83,7 @@ jobs:
   android:
     runs-on: ubuntu-24.04
     needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -89,6 +106,7 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
     steps:
       - uses: actions/checkout@v4
       - run: |
@@ -110,6 +128,7 @@ jobs:
   windows:
     runs-on: windows-latest
     needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -164,6 +183,7 @@ jobs:
   web:
     runs-on: ubuntu-24.04
     needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'web' }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -182,7 +202,7 @@ jobs:
   release:
     runs-on: ubuntu-24.04
     needs: [macos, ios, android, linux, windows, web]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - uses: actions/download-artifact@v4
         with:
