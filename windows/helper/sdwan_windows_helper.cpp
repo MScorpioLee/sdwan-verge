@@ -65,6 +65,8 @@ using WinDivertSendFn =
     BOOL(WINAPI*)(HANDLE, const VOID*, UINT, UINT*, const WINDIVERT_ADDRESS*);
 using WinDivertHelperCalcChecksumsFn =
     BOOL(WINAPI*)(PVOID, UINT, WINDIVERT_ADDRESS*, UINT64);
+using WinDivertHelperCompileFilterFn =
+    BOOL(WINAPI*)(const char*, WINDIVERT_LAYER, char*, UINT, const char**, UINT*);
 
 struct NatEntry {
   bool used = false;
@@ -120,6 +122,7 @@ struct WinDivertApi {
   WinDivertRecvFn recv = nullptr;
   WinDivertSendFn send = nullptr;
   WinDivertHelperCalcChecksumsFn calc_checksums = nullptr;
+  WinDivertHelperCompileFilterFn compile_filter = nullptr;
 };
 
 struct PhysicalAdapter {
@@ -229,6 +232,28 @@ std::string WideToUtf8(const std::wstring& value) {
   }
   std::string out(static_cast<size_t>(size - 1), '\0');
   WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, out.data(), size, nullptr, nullptr);
+  return out;
+}
+
+std::string Win32ErrorText(DWORD code) {
+  char* message = nullptr;
+  const DWORD flags =
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+  FormatMessageA(flags, nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                 reinterpret_cast<char*>(&message), 0, nullptr);
+  std::string out = "win32=" + std::to_string(code);
+  if (message != nullptr) {
+    std::string text(message);
+    LocalFree(message);
+    while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == '.')) {
+      text.pop_back();
+    }
+    std::replace(text.begin(), text.end(), '\r', ' ');
+    std::replace(text.begin(), text.end(), '\n', ' ');
+    if (!text.empty()) {
+      out += " " + text;
+    }
+  }
   return out;
 }
 
@@ -847,8 +872,33 @@ bool LoadWinDivert(WinDivertApi* api) {
   api->send = reinterpret_cast<WinDivertSendFn>(GetProcAddress(api->module, "WinDivertSend"));
   api->calc_checksums = reinterpret_cast<WinDivertHelperCalcChecksumsFn>(
       GetProcAddress(api->module, "WinDivertHelperCalcChecksums"));
+  api->compile_filter = reinterpret_cast<WinDivertHelperCompileFilterFn>(
+      GetProcAddress(api->module, "WinDivertHelperCompileFilter"));
   return api->open != nullptr && api->close != nullptr && api->recv != nullptr &&
-         api->send != nullptr && api->calc_checksums != nullptr;
+         api->send != nullptr && api->calc_checksums != nullptr && api->compile_filter != nullptr;
+}
+
+std::string BuildReturnFilter(const std::string& physical_ip) {
+  return "inbound and ip and ip.DstAddr == " + physical_ip +
+         " and ((tcp and tcp.DstPort >= " + std::to_string(kNatPortStart) +
+         " and tcp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
+         "(udp and udp.DstPort >= " + std::to_string(kNatPortStart) +
+         " and udp.DstPort <= " + std::to_string(kNatPortEnd) + "))";
+}
+
+bool ValidateWinDivertFilter(WinDivertApi* api, const std::string& filter, std::string* error) {
+  const char* error_str = nullptr;
+  UINT error_pos = 0;
+  if (api->compile_filter(filter.c_str(), WINDIVERT_LAYER_NETWORK, nullptr, 0,
+                          &error_str, &error_pos)) {
+    return true;
+  }
+  *error = "filter compile failed at " + std::to_string(error_pos);
+  if (error_str != nullptr && error_str[0] != '\0') {
+    *error += ": ";
+    *error += error_str;
+  }
+  return false;
 }
 
 bool IsSameSubnet(uint32_t ip, uint32_t target, uint32_t mask) {
@@ -1250,6 +1300,14 @@ bool StartAcceleration(const std::string& cpe) {
     g_runtime.last_error = "WinDivert.dll is missing or incompatible";
     return false;
   }
+  const std::string physical_ip = Ipv4ToString(g_runtime.physical.ip);
+  const std::string filter = BuildReturnFilter(physical_ip);
+  std::string filter_error;
+  if (!ValidateWinDivertFilter(&g_runtime.windivert, filter, &filter_error)) {
+    g_runtime.state = "failed";
+    g_runtime.last_error = "invalid WinDivert return filter: " + filter_error;
+    return false;
+  }
   if (g_runtime.wintun_adapter == nullptr) {
     if (g_runtime.wintun.open_adapter != nullptr) {
       g_runtime.wintun_adapter = g_runtime.wintun.open_adapter(kAdapterName);
@@ -1278,18 +1336,14 @@ bool StartAcceleration(const std::string& cpe) {
     return false;
   }
   LogEvent("Windows route layer ready: Wintun capture with CPE physical egress");
-  const std::string physical_ip = Ipv4ToString(g_runtime.physical.ip);
-  const std::string filter =
-      "inbound and ip and ip.DstAddr == " + physical_ip +
-      " and ((tcp.DstPort >= 42000 and tcp.DstPort <= 42999) or "
-      "(udp.DstPort >= 42000 and udp.DstPort <= 42999) or "
-      "(icmp.Id >= 42000 and icmp.Id <= 42999))";
   g_runtime.divert_return =
       g_runtime.windivert.open(filter.c_str(), WINDIVERT_LAYER_NETWORK, -500, 0);
   if (g_runtime.divert_return == INVALID_HANDLE_VALUE) {
+    const DWORD error = GetLastError();
     CleanupRoutes(&g_runtime);
     g_runtime.state = "failed";
-    g_runtime.last_error = "failed to open WinDivert return filter";
+    g_runtime.last_error =
+        "failed to open WinDivert return filter (" + Win32ErrorText(error) + ")";
     return false;
   }
   g_runtime.wintun_session = g_runtime.wintun.start_session(g_runtime.wintun_adapter, 0x400000);
@@ -1591,6 +1645,16 @@ int CommandSelfTest() {
   WSADATA wsa = {};
   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
     return SelfTestFail(10, "wsa startup failed");
+  }
+  WinDivertApi divert_api = {};
+  if (!LoadWinDivert(&divert_api)) {
+    WSACleanup();
+    return SelfTestFail(18, "windivert api load failed");
+  }
+  std::string filter_error;
+  if (!ValidateWinDivertFilter(&divert_api, BuildReturnFilter("192.168.1.88"), &filter_error)) {
+    WSACleanup();
+    return SelfTestFail(19, filter_error.c_str());
   }
   uint8_t packet[256] = {};
   size_t len = 0;
