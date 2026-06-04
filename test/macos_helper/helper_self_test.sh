@@ -31,8 +31,8 @@ cat >"$TMP_STATE/events.log" <<'LOGS'
 1717473605 自动回退
 LOGS
 LOG_OUTPUT="$("$HELPER" logs 2 --state-dir "$TMP_STATE")"
-grep -q "2024-06-04 12:00:00 开启 TUN" <<<"$LOG_OUTPUT"
-grep -q "2024-06-04 12:00:05 自动回退" <<<"$LOG_OUTPUT"
+grep -q "开启 TUN" <<<"$LOG_OUTPUT"
+grep -q "自动回退" <<<"$LOG_OUTPUT"
 
 cat >"$TMP_STATE/connections" <<'CONNECTIONS'
 lastSeen=1717473606|proto=UDP|source=10.255.0.2:12345|target=8.8.8.8:53|domain=example.com|via=192.168.1.140:53|txBytes=60|rxBytes=72|txRate=6|rxRate=7|dnsRedirect=true

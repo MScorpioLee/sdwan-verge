@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../tun/tun_controller.dart';
@@ -71,7 +73,10 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
             const SizedBox(height: 18),
             _SummaryRow(connections: filteredConnections),
             const SizedBox(height: 18),
-            _BandwidthChartCard(samples: widget.tunController.trafficSamples),
+            _BandwidthChartCard(
+              samples: widget.tunController.trafficSamples,
+              cpeHost: widget.tunController.status.cpe.host,
+            ),
             const SizedBox(height: 18),
             _DomainStatsCard(connections: filteredConnections),
             const SizedBox(height: 18),
@@ -244,53 +249,325 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
-class _BandwidthChartCard extends StatelessWidget {
-  const _BandwidthChartCard({required this.samples});
+enum _ChartAggregate { average, peak }
+
+enum _ChartRange { hour, day }
+
+class _BandwidthChartCard extends StatefulWidget {
+  const _BandwidthChartCard({required this.samples, required this.cpeHost});
 
   final List<TrafficSample> samples;
+  final String cpeHost;
+
+  @override
+  State<_BandwidthChartCard> createState() => _BandwidthChartCardState();
+}
+
+class _BandwidthChartCardState extends State<_BandwidthChartCard> {
+  _ChartAggregate _aggregate = _ChartAggregate.average;
+  _ChartRange _range = _ChartRange.hour;
+  int? _hoverIndex;
 
   @override
   Widget build(BuildContext context) {
-    final latest = samples.isEmpty ? null : samples.last;
+    final visible = _visibleSamples(widget.samples, _range);
+    final chartSamples = _aggregate == _ChartAggregate.average
+        ? _smoothedSamples(visible)
+        : visible;
+    final tooltipSample =
+        _hoverIndex == null ||
+            _hoverIndex! < 0 ||
+            _hoverIndex! >= chartSamples.length
+        ? null
+        : chartSamples[_hoverIndex!];
+
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
       decoration: panelDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _ChartHeader(
+            aggregate: _aggregate,
+            range: _range,
+            onAggregateChanged: (value) => setState(() {
+              _aggregate = value;
+              _hoverIndex = null;
+            }),
+            onRangeChanged: (value) => setState(() {
+              _range = value;
+              _hoverIndex = null;
+            }),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: _range == _ChartRange.day ? 245 : 220,
+            width: double.infinity,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final size = Size(constraints.maxWidth, constraints.maxHeight);
+                return MouseRegion(
+                  onHover: (event) => _setHover(event.localPosition, size),
+                  onExit: (_) => setState(() => _hoverIndex = null),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: (details) =>
+                        _setHover(details.localPosition, size),
+                    onPanDown: (details) =>
+                        _setHover(details.localPosition, size),
+                    onPanUpdate: (details) =>
+                        _setHover(details.localPosition, size),
+                    child: Stack(
+                      children: [
+                        CustomPaint(
+                          size: size,
+                          painter: _IkuaiBandwidthChartPainter(
+                            samples: chartSamples,
+                            hoverIndex: _hoverIndex,
+                          ),
+                        ),
+                        if (tooltipSample != null)
+                          _ChartTooltip(
+                            sample: tooltipSample,
+                            aggregate: _aggregate,
+                            left: _tooltipLeft(
+                              size,
+                              _hoverIndex!,
+                              chartSamples,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
           Row(
             children: [
-              const Text(
-                '带宽趋势',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
+              const Icon(Icons.hub_rounded, size: 16, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Text(
+                'CPE ${widget.cpeHost}',
+                style: const TextStyle(
+                  fontSize: 12,
                   color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              const Spacer(),
-              _Legend(color: AppColors.primary, label: '上行'),
-              const SizedBox(width: 12),
-              _Legend(color: AppColors.success, label: '下行'),
+              const SizedBox(width: 6),
+              const Text(
+                'TUN',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
             ],
           ),
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 170,
-            width: double.infinity,
-            child: CustomPaint(
-              painter: _BandwidthChartPainter(samples: samples),
+          const SizedBox(height: 9),
+          Container(
+            height: 8,
+            decoration: BoxDecoration(
+              color: AppColors.success,
+              borderRadius: BorderRadius.circular(4),
             ),
           ),
-          const SizedBox(height: 10),
-          Text(
-            latest == null
-                ? '等待采样'
-                : '当前 ↑ ${_formatRate(latest.txRate)}  ↓ ${_formatRate(latest.rxRate)}',
-            style: const TextStyle(
-              fontSize: 12,
+        ],
+      ),
+    );
+  }
+
+  void _setHover(Offset position, Size size) {
+    final visible = _visibleSamples(widget.samples, _range);
+    final chartSamples = _aggregate == _ChartAggregate.average
+        ? _smoothedSamples(visible)
+        : visible;
+    if (chartSamples.isEmpty) {
+      return;
+    }
+    final rect = _IkuaiBandwidthChartPainter.chartRect(size);
+    if (!rect.inflate(12).contains(position)) {
+      if (_hoverIndex != null) {
+        setState(() => _hoverIndex = null);
+      }
+      return;
+    }
+    final ratio = ((position.dx - rect.left) / rect.width).clamp(0.0, 1.0);
+    final index = (ratio * (chartSamples.length - 1)).round();
+    if (_hoverIndex != index) {
+      setState(() => _hoverIndex = index);
+    }
+  }
+
+  double _tooltipLeft(Size size, int index, List<TrafficSample> samples) {
+    final rect = _IkuaiBandwidthChartPainter.chartRect(size);
+    final x = samples.length <= 1
+        ? rect.right
+        : rect.left + rect.width * index / (samples.length - 1);
+    return (x + 10).clamp(0.0, math.max(0, size.width - 174));
+  }
+}
+
+class _ChartHeader extends StatelessWidget {
+  const _ChartHeader({
+    required this.aggregate,
+    required this.range,
+    required this.onAggregateChanged,
+    required this.onRangeChanged,
+  });
+
+  final _ChartAggregate aggregate;
+  final _ChartRange range;
+  final ValueChanged<_ChartAggregate> onAggregateChanged;
+  final ValueChanged<_ChartRange> onRangeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final controls = Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            _ChartMenuButton<_ChartAggregate>(
+              value: aggregate,
+              label: _aggregateText(aggregate),
+              items: const {
+                _ChartAggregate.average: '平均值',
+                _ChartAggregate.peak: '峰值',
+              },
+              onSelected: onAggregateChanged,
+            ),
+            _ChartMenuButton<String>(
+              value: 'all',
+              label: '全部',
+              items: const {'all': '全部'},
+              onSelected: (_) {},
+            ),
+            _RangeToggle(value: range, onChanged: onRangeChanged),
+          ],
+        );
+        if (constraints.maxWidth < 620) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _ChartTitle(),
+              const SizedBox(height: 12),
+              controls,
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [const _ChartTitle(), const Spacer(), controls],
+        );
+      },
+    );
+  }
+}
+
+class _ChartTitle extends StatelessWidget {
+  const _ChartTitle();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text(
+      '上下行速率',
+      style: TextStyle(
+        fontSize: 15,
+        fontWeight: FontWeight.w700,
+        color: AppColors.textPrimary,
+      ),
+    );
+  }
+}
+
+class _ChartMenuButton<T> extends StatelessWidget {
+  const _ChartMenuButton({
+    required this.value,
+    required this.label,
+    required this.items,
+    required this.onSelected,
+  });
+
+  final T value;
+  final String label;
+  final Map<T, String> items;
+  final ValueChanged<T> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<T>(
+      initialValue: value,
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        for (final entry in items.entries)
+          PopupMenuItem<T>(value: entry.key, child: Text(entry.value)),
+      ],
+      offset: const Offset(0, 38),
+      child: Container(
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(
+            color: value == _ChartAggregate.peak
+                ? AppColors.primary
+                : AppColors.border,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(width: 7),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 16,
               color: AppColors.textSecondary,
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RangeToggle extends StatelessWidget {
+  const _RangeToggle({required this.value, required this.onChanged});
+
+  final _ChartRange value;
+  final ValueChanged<_ChartRange> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 32,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: AppColors.primarySoft,
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _RangeButton(
+            label: '1小时',
+            selected: value == _ChartRange.hour,
+            onTap: () => onChanged(_ChartRange.hour),
+          ),
+          _RangeButton(
+            label: '24小时',
+            selected: value == _ChartRange.day,
+            onTap: () => onChanged(_ChartRange.day),
           ),
         ],
       ),
@@ -298,101 +575,398 @@ class _BandwidthChartCard extends StatelessWidget {
   }
 }
 
-class _Legend extends StatelessWidget {
-  const _Legend({required this.color, required this.label});
+class _RangeButton extends StatelessWidget {
+  const _RangeButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
-  final Color color;
   final String label;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    return InkWell(
+      borderRadius: BorderRadius.circular(5),
+      onTap: onTap,
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 11),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(5),
         ),
-        const SizedBox(width: 5),
-        Text(
+        child: Text(
           label,
-          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: selected ? Colors.white : AppColors.textSecondary,
+          ),
         ),
-      ],
+      ),
     );
   }
 }
 
-class _BandwidthChartPainter extends CustomPainter {
-  const _BandwidthChartPainter({required this.samples});
+class _ChartTooltip extends StatelessWidget {
+  const _ChartTooltip({
+    required this.sample,
+    required this.aggregate,
+    required this.left,
+  });
+
+  final TrafficSample sample;
+  final _ChartAggregate aggregate;
+  final double left;
+
+  @override
+  Widget build(BuildContext context) {
+    final prefix = _aggregateText(aggregate);
+    return Positioned(
+      left: left,
+      top: 10,
+      child: Container(
+        width: 164,
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+        decoration: BoxDecoration(
+          color: const Color(0xD9232D36),
+          borderRadius: BorderRadius.circular(4),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x26000000),
+              blurRadius: 14,
+              offset: Offset(0, 8),
+            ),
+          ],
+        ),
+        child: DefaultTextStyle(
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11.5,
+            height: 1.55,
+            fontWeight: FontWeight.w700,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _formatTooltipTime(sample.at),
+                style: const TextStyle(fontSize: 13, height: 1.3),
+              ),
+              const SizedBox(height: 5),
+              Text('$prefix上行：${_formatRate(sample.txRate)}'),
+              Text('$prefix下行：${_formatRate(sample.rxRate)}'),
+              const Text('延迟：待接入 RTT'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _IkuaiBandwidthChartPainter extends CustomPainter {
+  const _IkuaiBandwidthChartPainter({
+    required this.samples,
+    required this.hoverIndex,
+  });
 
   final List<TrafficSample> samples;
+  final int? hoverIndex;
+
+  static Rect chartRect(Size size) => Rect.fromLTWH(
+    42,
+    28,
+    math.max(1, size.width - 92),
+    math.max(1, size.height - 60),
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
-    final grid = Paint()
-      ..color = AppColors.border
-      ..strokeWidth = 1;
-    for (var i = 0; i <= 3; i++) {
-      final y = size.height * i / 3;
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
-    }
+    final rect = chartRect(size);
+    _drawAxisTitles(canvas, rect);
+    _drawGrid(canvas, rect);
+    _drawXAxis(canvas, rect);
     if (samples.isEmpty) {
+      _drawEmpty(canvas, rect);
       return;
     }
 
-    final visible = samples.length > 60
-        ? samples.sublist(samples.length - 60)
-        : samples;
-    final maxRate = visible
-        .fold<int>(
-          1,
-          (max, sample) => [
-            max,
-            sample.txRate,
-            sample.rxRate,
-          ].reduce((a, b) => a > b ? a : b),
-        )
-        .toDouble();
+    final maxRate = _niceMaxRate(samples);
+    _drawYAxis(canvas, rect, maxRate);
+    _drawLatencyReference(canvas, rect);
+    final txPoints = _pointsFor(
+      samples,
+      rect,
+      maxRate,
+      (sample) => sample.txRate,
+    );
+    final rxPoints = _pointsFor(
+      samples,
+      rect,
+      maxRate,
+      (sample) => sample.rxRate,
+    );
+    _drawLine(canvas, txPoints, const Color(0xFF8C8AE8), rect);
+    _drawLine(canvas, rxPoints, const Color(0xFF74B889), rect);
+    _drawHover(canvas, rect, maxRate);
+  }
 
-    Path lineFor(int Function(TrafficSample sample) selector) {
-      final path = Path();
-      for (var i = 0; i < visible.length; i++) {
-        final x = visible.length == 1
-            ? size.width
-            : size.width * i / (visible.length - 1);
-        final y =
-            size.height -
-            (selector(visible[i]).clamp(0, maxRate.toInt()) / maxRate) *
-                size.height;
-        final point = Offset(x, y);
-        if (i == 0) {
-          path.moveTo(point.dx, point.dy);
-        } else {
-          path.lineTo(point.dx, point.dy);
-        }
-      }
+  void _drawAxisTitles(Canvas canvas, Rect rect) {
+    _drawText(
+      canvas,
+      '延迟ms',
+      Offset(rect.left - 2, 0),
+      color: AppColors.textPrimary,
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+    );
+    _drawText(
+      canvas,
+      '速率',
+      Offset(rect.right + 12, 0),
+      color: AppColors.textPrimary,
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      align: TextAlign.right,
+    );
+  }
+
+  void _drawGrid(Canvas canvas, Rect rect) {
+    final grid = Paint()
+      ..color = const Color(0xFFEAEFF5)
+      ..strokeWidth = 1;
+    for (var i = 0; i <= 5; i++) {
+      final y = rect.top + rect.height * i / 5;
+      _drawDashedLine(
+        canvas,
+        Offset(rect.left, y),
+        Offset(rect.right, y),
+        grid,
+      );
+    }
+    final axis = Paint()
+      ..color = const Color(0xFFDDE4EC)
+      ..strokeWidth = 1;
+    canvas.drawLine(
+      Offset(rect.left, rect.bottom),
+      Offset(rect.right, rect.bottom),
+      axis,
+    );
+  }
+
+  void _drawYAxis(Canvas canvas, Rect rect, int maxRate) {
+    for (var i = 0; i <= 5; i++) {
+      final ratio = i / 5;
+      final y = rect.bottom - rect.height * ratio;
+      final latency = (20 * ratio).round();
+      final rate = (maxRate * ratio).round();
+      _drawText(
+        canvas,
+        '$latency',
+        Offset(0, y - 7),
+        color: AppColors.textSecondary,
+        fontSize: 11,
+      );
+      _drawText(
+        canvas,
+        _formatBytes(rate),
+        Offset(rect.right + 12, y - 7),
+        color: AppColors.textSecondary,
+        fontSize: 11,
+      );
+    }
+  }
+
+  void _drawXAxis(Canvas canvas, Rect rect) {
+    if (samples.isEmpty) {
+      return;
+    }
+    final labelCount = samples.length < 6 ? samples.length : 6;
+    for (var i = 0; i < labelCount; i++) {
+      final sampleIndex = labelCount == 1
+          ? samples.length - 1
+          : (i * (samples.length - 1) / (labelCount - 1)).round();
+      final x = labelCount == 1
+          ? rect.right
+          : rect.left + rect.width * i / (labelCount - 1);
+      _drawText(
+        canvas,
+        _formatAxisTime(samples[sampleIndex].at),
+        Offset(x - 16, rect.bottom + 10),
+        color: AppColors.textSecondary,
+        fontSize: 11,
+      );
+    }
+  }
+
+  void _drawLatencyReference(Canvas canvas, Rect rect) {
+    final paint = Paint()
+      ..color = const Color(0xFF66A8FF)
+      ..strokeWidth = 1.2;
+    final y = rect.top + rect.height * 0.36;
+    _drawDashedLine(canvas, Offset(rect.left, y), Offset(rect.right, y), paint);
+    _drawText(
+      canvas,
+      'RTT 待接入',
+      Offset(rect.left + 8, y - 17),
+      color: const Color(0xFF66A8FF),
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+    );
+  }
+
+  List<Offset> _pointsFor(
+    List<TrafficSample> samples,
+    Rect rect,
+    int maxRate,
+    int Function(TrafficSample sample) selector,
+  ) {
+    return [
+      for (var i = 0; i < samples.length; i++)
+        Offset(
+          samples.length == 1
+              ? rect.right
+              : rect.left + rect.width * i / (samples.length - 1),
+          rect.bottom -
+              rect.height * (selector(samples[i]).clamp(0, maxRate) / maxRate),
+        ),
+    ];
+  }
+
+  void _drawLine(Canvas canvas, List<Offset> points, Color color, Rect rect) {
+    if (points.isEmpty) {
+      return;
+    }
+    final fill = Paint()
+      ..color = color.withValues(alpha: 0.07)
+      ..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..color = color
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final path = _smoothPath(points);
+    final fillPath = Path.from(path)
+      ..lineTo(points.last.dx, rect.bottom)
+      ..lineTo(points.first.dx, rect.bottom)
+      ..close();
+    canvas.drawPath(fillPath, fill);
+    canvas.drawPath(path, stroke);
+  }
+
+  Path _smoothPath(List<Offset> points) {
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    if (points.length == 1) {
       return path;
     }
+    for (var i = 1; i < points.length; i++) {
+      final previous = points[i - 1];
+      final current = points[i];
+      final mid = Offset(
+        (previous.dx + current.dx) / 2,
+        (previous.dy + current.dy) / 2,
+      );
+      path.quadraticBezierTo(previous.dx, previous.dy, mid.dx, mid.dy);
+    }
+    path.lineTo(points.last.dx, points.last.dy);
+    return path;
+  }
 
-    final txPaint = Paint()
-      ..color = AppColors.primary
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    final rxPaint = Paint()
-      ..color = AppColors.success
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    canvas.drawPath(lineFor((sample) => sample.txRate), txPaint);
-    canvas.drawPath(lineFor((sample) => sample.rxRate), rxPaint);
+  void _drawHover(Canvas canvas, Rect rect, int maxRate) {
+    final index = hoverIndex;
+    if (index == null || index < 0 || index >= samples.length) {
+      return;
+    }
+    final x = samples.length <= 1
+        ? rect.right
+        : rect.left + rect.width * index / (samples.length - 1);
+    final guide = Paint()
+      ..color = const Color(0xFF6B7280).withValues(alpha: 0.35)
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(x, rect.top), Offset(x, rect.bottom), guide);
+    for (final point in [
+      _pointAt(samples[index].txRate, x, rect, maxRate),
+      _pointAt(samples[index].rxRate, x, rect, maxRate),
+    ]) {
+      canvas.drawCircle(
+        point,
+        4,
+        Paint()..color = const Color(0xFF5B6EE1).withValues(alpha: 0.22),
+      );
+      canvas.drawCircle(point, 2.4, Paint()..color = const Color(0xFF5B6EE1));
+    }
+  }
+
+  Offset _pointAt(int rate, double x, Rect rect, int maxRate) {
+    return Offset(
+      x,
+      rect.bottom - rect.height * (rate.clamp(0, maxRate) / maxRate),
+    );
+  }
+
+  void _drawEmpty(Canvas canvas, Rect rect) {
+    _drawText(
+      canvas,
+      '等待采样',
+      Offset(rect.center.dx - 28, rect.center.dy - 8),
+      color: AppColors.textSecondary,
+      fontSize: 12,
+    );
+  }
+
+  void _drawDashedLine(Canvas canvas, Offset start, Offset end, Paint paint) {
+    const dash = 5.0;
+    const gap = 5.0;
+    final dx = end.dx - start.dx;
+    final dy = end.dy - start.dy;
+    final distance = math.sqrt(dx * dx + dy * dy);
+    if (distance == 0) {
+      return;
+    }
+    final direction = Offset(dx / distance, dy / distance);
+    var drawn = 0.0;
+    while (drawn < distance) {
+      final segmentStart = start + direction * drawn;
+      final segmentEnd = start + direction * math.min(drawn + dash, distance);
+      canvas.drawLine(segmentStart, segmentEnd, paint);
+      drawn += dash + gap;
+    }
+  }
+
+  void _drawText(
+    Canvas canvas,
+    String text,
+    Offset offset, {
+    required Color color,
+    double fontSize = 12,
+    FontWeight fontWeight = FontWeight.w500,
+    TextAlign align = TextAlign.left,
+  }) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      textAlign: align,
+    )..layout();
+    painter.paint(canvas, offset);
   }
 
   @override
-  bool shouldRepaint(covariant _BandwidthChartPainter oldDelegate) {
-    return oldDelegate.samples != samples;
+  bool shouldRepaint(covariant _IkuaiBandwidthChartPainter oldDelegate) {
+    return oldDelegate.samples != samples ||
+        oldDelegate.hoverIndex != hoverIndex;
   }
 }
 
@@ -646,6 +1220,107 @@ List<_DomainStat> _domainStats(List<TunConnection> connections) {
   });
   return values;
 }
+
+List<TrafficSample> _visibleSamples(
+  List<TrafficSample> samples,
+  _ChartRange range,
+) {
+  if (samples.isEmpty) {
+    return const [];
+  }
+  final cutoff = samples.last.at.subtract(
+    range == _ChartRange.hour
+        ? const Duration(hours: 1)
+        : const Duration(hours: 24),
+  );
+  final visible = samples
+      .where((sample) => !sample.at.isBefore(cutoff))
+      .toList();
+  if (visible.isNotEmpty) {
+    return visible;
+  }
+  return samples.length > 80 ? samples.sublist(samples.length - 80) : samples;
+}
+
+List<TrafficSample> _smoothedSamples(List<TrafficSample> samples) {
+  if (samples.length < 3) {
+    return samples;
+  }
+  return [
+    for (var i = 0; i < samples.length; i++)
+      TrafficSample(
+        at: samples[i].at,
+        txRate: _averageAround(samples, i, (sample) => sample.txRate),
+        rxRate: _averageAround(samples, i, (sample) => sample.rxRate),
+      ),
+  ];
+}
+
+int _averageAround(
+  List<TrafficSample> samples,
+  int index,
+  int Function(TrafficSample sample) selector,
+) {
+  final start = math.max(0, index - 1);
+  final end = math.min(samples.length - 1, index + 1);
+  var total = 0;
+  var count = 0;
+  for (var i = start; i <= end; i++) {
+    total += selector(samples[i]);
+    count += 1;
+  }
+  return count == 0 ? 0 : (total / count).round();
+}
+
+int _niceMaxRate(List<TrafficSample> samples) {
+  final maxRate = samples.fold<int>(
+    1,
+    (maxRate, sample) =>
+        math.max(maxRate, math.max(sample.txRate, sample.rxRate)),
+  );
+  final padded = (maxRate * 1.25).ceil();
+  const steps = [
+    1024,
+    2 * 1024,
+    5 * 1024,
+    10 * 1024,
+    20 * 1024,
+    50 * 1024,
+    100 * 1024,
+    200 * 1024,
+    500 * 1024,
+    1024 * 1024,
+    2 * 1024 * 1024,
+    5 * 1024 * 1024,
+    10 * 1024 * 1024,
+    20 * 1024 * 1024,
+    50 * 1024 * 1024,
+  ];
+  for (final step in steps) {
+    if (padded <= step) {
+      return step;
+    }
+  }
+  return padded;
+}
+
+String _aggregateText(_ChartAggregate aggregate) {
+  return switch (aggregate) {
+    _ChartAggregate.average => '平均值',
+    _ChartAggregate.peak => '峰值',
+  };
+}
+
+String _formatAxisTime(DateTime time) {
+  return '${_two(time.hour)}:${_two(time.minute)}';
+}
+
+String _formatTooltipTime(DateTime time) {
+  return '${time.year}-${_two(time.month)}-${_two(time.day)} '
+      '${_two(time.hour)}:${_two(time.minute)}';
+}
+
+String _two(int value) => value.toString().padLeft(2, '0');
 
 class _MutableDomainStat {
   _MutableDomainStat(this.domain);

@@ -186,7 +186,11 @@ void main() {
     await tester.tap(find.text('连接'));
     await tester.pumpAndSettle();
     expect(find.text('连接统计'), findsOneWidget);
-    expect(find.text('带宽趋势'), findsOneWidget);
+    expect(find.text('上下行速率'), findsOneWidget);
+    expect(find.text('平均值'), findsWidgets);
+    expect(find.text('全部'), findsWidgets);
+    expect(find.text('1小时'), findsOneWidget);
+    expect(find.text('24小时'), findsOneWidget);
     expect(find.text('域名统计'), findsOneWidget);
     expect(find.text('example.com'), findsWidgets);
     expect(find.text('dns.google'), findsWidgets);
