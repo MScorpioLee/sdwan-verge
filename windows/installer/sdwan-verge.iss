@@ -20,6 +20,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 
 [Languages]
+Name: "chinesesimplified"; MessagesFile: ".\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]

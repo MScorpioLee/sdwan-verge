@@ -154,6 +154,7 @@ jobs:
           $env:SDWAN_SOURCE_DIR = (Resolve-Path "build/windows/x64/runner/Release").Path
           $env:SDWAN_OUTPUT_DIR = (Resolve-Path "dist/releases").Path
           $env:SDWAN_APP_VERSION = $version
+          Invoke-WebRequest "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/main/ChineseSimplified.isl" -OutFile "windows\installer\ChineseSimplified.isl"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "windows\installer\sdwan-verge.iss"
       - uses: actions/upload-artifact@v4
         with:
