@@ -17,7 +17,7 @@
 - CPE 类似旁路由，可以作为 SD-WAN 出口或下一跳。
 - 下一阶段先做 TUN 虚拟网卡模式。
 
-因此本设计把 TUN/VPN 模式改为默认主线，route/DNS 命令模式降级为兼容 fallback，系统代理模式暂不实现。
+因此本设计把产品收敛为 TUN/VPN 单一主线。route/DNS 命令模式、系统代理模式和路由器插件管理入口不再作为 App 主功能出现；历史 route/DNS 代码只作为迁移过程中的内部旧实现，后续应移除或隐藏。
 
 ## 设计目标
 
@@ -26,7 +26,7 @@
 3. Flutter 前台只做管理器：开启/关闭、状态、日志、配置和错误提示。
 4. CPE 异常时自动停止 TUN，恢复系统原网络路径，避免整机断网。
 5. 第一阶段优先做 macOS TUN MVP，验证真实环境可行后再做 Windows、Linux、Android、iOS。
-6. OpenWrt/iStoreOS 插件继续作为整网模式保留。
+6. App 内只暴露 TUN 虚拟网卡能力；其它模式不再进入主流程。
 
 ## 非目标
 
@@ -41,26 +41,18 @@
 
 ## 产品模式
 
-`SD-WAN Verge` 的网络模式调整为：
+`SD-WAN Verge` 的网络模式调整为单一 TUN 模式：
 
 ```text
-默认模式：TUN 旁路由模式
+TUN 旁路由模式
   - 创建虚拟网卡
   - 接管目标流量
   - 交给 sdwan-core
   - sdwan-core 转发到 CPE
   - CPE 异常时自动停止 TUN
-
-备用模式：路由命令模式
-  - 保留现有 BAT 等价能力
-  - 适合应急或不支持 TUN 的桌面环境
-
-整网模式：OpenWrt/iStoreOS 插件
-  - 路由器端统一下发旁路由策略
-  - 手机和电脑都可通过路由器受益
 ```
 
-系统代理模式暂不进入第一阶段 UI。
+系统代理、route/DNS fallback、OpenWrt/iStoreOS 插件入口不进入第一阶段 UI。
 
 ## 核心架构
 
@@ -115,8 +107,8 @@ macOS 第一阶段采用 `Network Extension` 的 Packet Tunnel 方向。
 1. App 可以安装或启用 Packet Tunnel 配置。
 2. 用户首次允许 VPN/TUN 配置。
 3. App 可以启动和停止 TUN。
-4. Core 可以检测 CPE `192.168.1.140` 是否在线。
-5. CPE 连续失败时自动停止 TUN，并在 UI 显示“CPE 异常，已恢复直连”。
+4. Core 可以检测虚拟网卡到 CPE `192.168.1.140` 的连接是否正常。
+5. CPE 连续失败时自动停止 TUN，并在 UI 显示“CPE 异常，已自动切回直连”。
 6. 日志能记录启动、停止、健康检测、失败原因。
 
 ## 转发策略
@@ -214,7 +206,7 @@ L3：出口可用
 - `core.tun.stop()`
   - 停止 TUN。
 - `core.tun.healthCheck()`
-  - 主动执行 CPE 健康检测。
+  - 主动执行虚拟网卡到 CPE 的连接检测。
 - `core.tun.logs(since)`
   - 查询 TUN 日志。
 
@@ -231,10 +223,6 @@ L3：出口可用
     "reachable": false,
     "serviceReady": false,
     "lastCheckAt": null
-  },
-  "fallback": {
-    "routeModeAvailable": true,
-    "routerPluginAvailable": false
   },
   "lastError": null
 }
@@ -274,7 +262,6 @@ L3：出口可用
 设置页：
 
 - 默认模式：TUN
-- 备用模式：路由命令
 - CPE 地址：`192.168.1.140`
 - CPE 健康检测方式：ping/TCP/HTTP health
 - 连续失败次数：默认 3
@@ -291,7 +278,7 @@ L3：出口可用
 - macOS/iOS Network Extension 需要 Xcode target、entitlement 和配置流程。
 - Windows Wintun/service 需要安装和卸载流程。
 - Android 使用 `VpnService` 后，商店分发需要说明 VPN 用途。
-- 如果 CPE 只支持旁路由下一跳，不支持标准代理或隧道，TUN 数据转发实现会比 route fallback 更复杂。
+- 如果 CPE 只支持旁路由下一跳，不支持标准代理或隧道，TUN 数据转发实现必须在 Core 内明确处理，不能退回物理网卡路由修改。
 - MVP 必须避免“开启后假装加速，实际黑洞流量”。
 
 ## 验收标准
@@ -305,7 +292,7 @@ macOS TUN MVP 完成时：
 - CPE 连续失败后自动停止 TUN。
 - 不修改物理网卡 IP、默认网关和 DNS。
 - 日志显示启动、停止、健康检测和自动回退原因。
-- route fallback 仍可作为兼容模式保留，但不作为默认主按钮。
+- App UI 只显示 TUN 虚拟网卡模式，不显示 route/DNS 或系统代理模式。
 
 跨平台后续完成时：
 

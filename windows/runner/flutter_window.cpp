@@ -1,8 +1,38 @@
 #include "flutter_window.h"
 
+#include <flutter/standard_method_codec.h>
+
 #include <optional>
+#include <string>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+constexpr char kTunChannelName[] = "sdwan_client/tun";
+constexpr char kDefaultCpeHost[] = "192.168.1.140";
+
+flutter::EncodableValue UnavailableHealth() {
+  return flutter::EncodableValue(flutter::EncodableMap{
+      {flutter::EncodableValue("host"), flutter::EncodableValue(kDefaultCpeHost)},
+      {flutter::EncodableValue("reachable"), flutter::EncodableValue(false)},
+      {flutter::EncodableValue("serviceReady"), flutter::EncodableValue(false)},
+      {flutter::EncodableValue("error"),
+       flutter::EncodableValue("TUN native service is not wired yet")},
+  });
+}
+
+flutter::EncodableValue UnsupportedStatus(
+    const std::string& state = "stopped",
+    const std::string& message = "Windows Wintun backend is not wired yet") {
+  return flutter::EncodableValue(flutter::EncodableMap{
+      {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
+      {flutter::EncodableValue("permission"),
+       flutter::EncodableValue("unsupported")},
+      {flutter::EncodableValue("cpe"), UnavailableHealth()},
+      {flutter::EncodableValue("lastError"), flutter::EncodableValue(message)},
+  });
+}
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +55,25 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  tun_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), kTunChannelName,
+          &flutter::StandardMethodCodec::GetInstance());
+  tun_channel_->SetMethodCallHandler([](const auto& call, auto result) {
+    const std::string& method = call.method_name();
+    if (method == "status") {
+      result->Success(UnsupportedStatus());
+    } else if (method == "healthCheck") {
+      result->Success(UnavailableHealth());
+    } else if (method == "start") {
+      result->Success(UnsupportedStatus(
+          "failed", "Windows Wintun backend is not wired yet"));
+    } else if (method == "stop") {
+      result->Success(UnsupportedStatus());
+    } else {
+      result->NotImplemented();
+    }
+  });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -40,6 +89,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  tun_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

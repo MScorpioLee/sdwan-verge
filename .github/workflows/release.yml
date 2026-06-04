@@ -1,0 +1,91 @@
+name: release-builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  macos-ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - run: flutter build ios --release --no-codesign
+      - run: bash scripts/package_releases.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-macos-ios
+          path: |
+            dist/releases/sdwan-verge-macos-arm64-release.zip
+            dist/releases/sdwan-verge-ios-release-unsigned.zip
+
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --release --target-platform android-arm64
+      - run: bash scripts/package_releases.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-android
+          path: dist/releases/sdwan-verge-android-arm64-release.apk
+
+  linux-web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - run: flutter build web
+      - run: bash scripts/package_releases.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-linux-web
+          path: |
+            dist/releases/sdwan-verge-linux-x64-release.tar.gz
+            dist/releases/sdwan-verge-web-release.zip
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/releases | Out-Null
+          Compress-Archive `
+            -Path build/windows/x64/runner/Release/* `
+            -DestinationPath dist/releases/sdwan-verge-windows-x64-release.zip `
+            -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-windows
+          path: dist/releases/sdwan-verge-windows-x64-release.zip

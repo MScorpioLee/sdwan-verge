@@ -10,9 +10,65 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  FlMethodChannel* tun_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+static constexpr char kTunChannelName[] = "sdwan_client/tun";
+static constexpr char kDefaultCpeHost[] = "192.168.1.140";
+
+static FlValue* unavailable_health() {
+  FlValue* value = fl_value_new_map();
+  fl_value_set_string_take(value, "host", fl_value_new_string(kDefaultCpeHost));
+  fl_value_set_string_take(value, "reachable", fl_value_new_bool(FALSE));
+  fl_value_set_string_take(value, "serviceReady", fl_value_new_bool(FALSE));
+  fl_value_set_string_take(
+      value, "error",
+      fl_value_new_string("TUN native service is not wired yet"));
+  return value;
+}
+
+static FlValue* unsupported_status(
+    const gchar* state = "stopped",
+    const gchar* message = "Linux /dev/net/tun backend is not wired yet") {
+  FlValue* value = fl_value_new_map();
+  fl_value_set_string_take(value, "state", fl_value_new_string(state));
+  fl_value_set_string_take(value, "permission",
+                           fl_value_new_string("unsupported"));
+  fl_value_set_string_take(value, "cpe", unavailable_health());
+  fl_value_set_string_take(value, "lastError", fl_value_new_string(message));
+  return value;
+}
+
+static void tun_method_call_cb(FlMethodChannel* channel,
+                               FlMethodCall* method_call,
+                               gpointer user_data) {
+  const gchar* method = fl_method_call_get_name(method_call);
+  g_autoptr(FlMethodResponse) response = nullptr;
+
+  if (g_strcmp0(method, "status") == 0) {
+    g_autoptr(FlValue) result = unsupported_status();
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "healthCheck") == 0) {
+    g_autoptr(FlValue) result = unavailable_health();
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "start") == 0) {
+    g_autoptr(FlValue) result = unsupported_status(
+        "failed", "Linux /dev/net/tun backend is not wired yet");
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else if (g_strcmp0(method, "stop") == 0) {
+    g_autoptr(FlValue) result = unsupported_status();
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else {
+    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  }
+
+  g_autoptr(GError) error = nullptr;
+  if (!fl_method_call_respond(method_call, response, &error)) {
+    g_warning("Failed to send TUN response: %s", error->message);
+  }
+}
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
@@ -75,6 +131,14 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  FlEngine* engine = fl_view_get_engine(view);
+  FlBinaryMessenger* messenger = fl_engine_get_binary_messenger(engine);
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->tun_channel = fl_method_channel_new(
+      messenger, kTunChannelName, FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(
+      self->tun_channel, tun_method_call_cb, self, nullptr);
+
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
@@ -120,6 +184,7 @@ static void my_application_shutdown(GApplication* application) {
 // Implements GObject::dispose.
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
+  g_clear_object(&self->tun_channel);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }

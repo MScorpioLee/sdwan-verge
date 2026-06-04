@@ -1,25 +1,34 @@
 import 'package:flutter/material.dart';
 
-import 'platform/network_gateway.dart';
+import 'services/app_config_controller.dart';
 import 'services/config_repository.dart';
-import 'services/sdwan_controller.dart';
+import 'tun/tun_controller.dart';
+import 'tun/tun_service.dart';
 import 'ui/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final controller = SdwanController(
-    gateway: createNetworkPlatformGateway(),
-    configStore: ConfigRepository(),
+  final configController = AppConfigController(configStore: ConfigRepository());
+  final tunController = TunController(service: MethodChannelTunService());
+  await configController.initialize();
+  await tunController.initialize();
+  runApp(
+    SdwanClientApp(
+      configController: configController,
+      tunController: tunController,
+    ),
   );
-  await controller.gateway.ensureAdminOrRelaunch();
-  await controller.initialize();
-  runApp(SdwanClientApp(controller: controller));
 }
 
 class SdwanClientApp extends StatelessWidget {
-  const SdwanClientApp({super.key, required this.controller});
+  const SdwanClientApp({
+    super.key,
+    required this.configController,
+    required this.tunController,
+  });
 
-  final SdwanController controller;
+  final AppConfigController configController;
+  final TunController tunController;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +45,10 @@ class SdwanClientApp extends StatelessWidget {
           ),
         ),
       ),
-      home: AppShell(controller: controller),
+      home: AppShell(
+        configController: configController,
+        tunController: tunController,
+      ),
     );
   }
 }
