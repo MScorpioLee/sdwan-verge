@@ -20,6 +20,7 @@ void main() {
           expect(call.method, 'status');
           return {
             'state': 'running',
+            'adapterName': 'Windows Wintun',
             'permission': 'ready',
             'helperInstalled': true,
             'txBytes': 1024,
@@ -38,6 +39,7 @@ void main() {
     final status = await service.status();
 
     expect(status.state, TunState.running);
+    expect(status.adapterName, 'Windows Wintun');
     expect(status.permission, TunPermission.ready);
     expect(status.helperInstalled, isTrue);
     expect(status.cpe.reachable, isTrue);

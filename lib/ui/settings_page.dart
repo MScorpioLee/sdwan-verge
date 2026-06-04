@@ -282,7 +282,7 @@ class _SystemSettingsCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 10),
                   const Text(
-                    '虚拟网卡模式',
+                    '系统加速模式',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,

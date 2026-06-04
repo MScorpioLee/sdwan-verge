@@ -236,6 +236,7 @@ class MethodChannelTunService implements TunService {
         rawState == TunState.autoRecovered && cpe.reachable && cpe.serviceReady;
 
     return TunStatus.defaults(cpeHost: defaultCpeHost).copyWith(
+      adapterName: value['adapterName']?.toString(),
       state: recoveredButHealthy ? TunState.stopped : rawState,
       permission: _permissionFromString(value['permission'] as String?),
       cpe: cpe,

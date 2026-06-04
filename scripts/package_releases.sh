@@ -8,13 +8,14 @@ mkdir -p "$DIST_DIR"
 
 package_macos() {
   local app_path="$ROOT_DIR/build/macos/Build/Products/Release/SD-WAN Verge.app"
-  local out_path="$DIST_DIR/sdwan-verge-macos-release.zip"
+  local out_path="$DIST_DIR/sdwan-verge-macos-release.dmg"
   if [[ -d "$app_path" ]]; then
     local helper_path
     helper_path="$("$ROOT_DIR/scripts/build_macos_helper.sh")"
     cp "$helper_path" "$app_path/Contents/Resources/sdwan-macos-helper"
     chmod 755 "$app_path/Contents/Resources/sdwan-macos-helper"
-    (cd "$(dirname "$app_path")" && zip -qry "$out_path" "$(basename "$app_path")")
+    rm -f "$out_path"
+    hdiutil create -volname "SD-WAN Verge" -srcfolder "$app_path" -ov -format UDZO "$out_path"
     echo "packaged $out_path"
   fi
 }
@@ -39,9 +40,14 @@ package_android() {
 
 package_ios() {
   local app_path="$ROOT_DIR/build/ios/iphoneos/Runner.app"
-  local out_path="$DIST_DIR/sdwan-verge-ios-release-unsigned.zip"
+  local out_path="$DIST_DIR/sdwan-verge-ios-release-unsigned.ipa"
   if [[ -d "$app_path" ]]; then
-    (cd "$(dirname "$app_path")" && zip -qry "$out_path" "$(basename "$app_path")")
+    local payload_dir="$DIST_DIR/ios-payload/Payload"
+    rm -rf "$DIST_DIR/ios-payload" "$out_path"
+    mkdir -p "$payload_dir"
+    cp -R "$app_path" "$payload_dir/Runner.app"
+    (cd "$DIST_DIR/ios-payload" && zip -qry "$out_path" Payload)
+    rm -rf "$DIST_DIR/ios-payload"
     echo "packaged $out_path"
   fi
 }

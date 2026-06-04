@@ -41,20 +41,23 @@ flutter::EncodableValue UnavailableHealth(const std::string& host) {
       {flutter::EncodableValue("reachable"), flutter::EncodableValue(false)},
       {flutter::EncodableValue("serviceReady"), flutter::EncodableValue(false)},
       {flutter::EncodableValue("error"),
-       flutter::EncodableValue("TUN native service is not wired yet")},
+       flutter::EncodableValue("Windows Wintun 数据面待接入")},
   });
 }
 
 flutter::EncodableValue UnsupportedStatus(
     const std::string& state = "stopped",
-    const std::string& message = "Windows Wintun backend is not wired yet",
+    const std::string& message = "Windows Wintun 数据面待接入",
     const std::string& host = kDefaultCpeHost) {
   return flutter::EncodableValue(flutter::EncodableMap{
       {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
+      {flutter::EncodableValue("adapterName"),
+       flutter::EncodableValue("Windows Wintun")},
       {flutter::EncodableValue("permission"),
        flutter::EncodableValue("unsupported")},
       {flutter::EncodableValue("cpe"), UnavailableHealth(host)},
-      {flutter::EncodableValue("helperInstalled"), flutter::EncodableValue(false)},
+      {flutter::EncodableValue("helperInstalled"),
+       flutter::EncodableValue(false)},
       {flutter::EncodableValue("txBytes"), flutter::EncodableValue(0)},
       {flutter::EncodableValue("rxBytes"), flutter::EncodableValue(0)},
       {flutter::EncodableValue("txRate"), flutter::EncodableValue(0)},
@@ -93,26 +96,23 @@ bool FlutterWindow::OnCreate() {
     const std::string& method = call.method_name();
     const std::string host = CpeHostFromArgs(call.arguments());
     if (method == "status") {
-      result->Success(UnsupportedStatus("stopped",
-                                        "Windows Wintun backend is not wired yet",
+      result->Success(UnsupportedStatus("stopped", "Windows Wintun 数据面待接入",
                                         host));
     } else if (method == "healthCheck") {
       result->Success(UnavailableHealth(host));
     } else if (method == "logs" || method == "connections") {
       result->Success(EmptyList());
     } else if (method == "installHelper") {
-      result->Success(UnsupportedStatus(
-          "failed", "Windows Wintun backend is not wired yet", host));
+      result->Success(
+          UnsupportedStatus("failed", "Windows Wintun 数据面待接入", host));
     } else if (method == "uninstallHelper") {
-      result->Success(UnsupportedStatus("stopped",
-                                        "Windows Wintun backend is not wired yet",
+      result->Success(UnsupportedStatus("stopped", "Windows Wintun 数据面待接入",
                                         host));
     } else if (method == "start") {
-      result->Success(UnsupportedStatus(
-          "failed", "Windows Wintun backend is not wired yet", host));
+      result->Success(
+          UnsupportedStatus("failed", "Windows Wintun 数据面待接入", host));
     } else if (method == "stop") {
-      result->Success(UnsupportedStatus("stopped",
-                                        "Windows Wintun backend is not wired yet",
+      result->Success(UnsupportedStatus("stopped", "Windows Wintun 数据面待接入",
                                         host));
     } else if (method == "launchAtLoginStatus" ||
                method == "setLaunchAtLogin") {

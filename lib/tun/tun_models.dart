@@ -189,6 +189,7 @@ class CpeHealth {
 class TunStatus {
   const TunStatus({
     required this.mode,
+    this.adapterName = 'TUN 虚拟网卡',
     required this.state,
     required this.permission,
     required this.cpe,
@@ -200,6 +201,7 @@ class TunStatus {
   factory TunStatus.defaults({String cpeHost = '192.168.1.140'}) {
     return TunStatus(
       mode: TunMode.tun,
+      adapterName: 'TUN 虚拟网卡',
       state: TunState.stopped,
       permission: TunPermission.needsVpnConsent,
       cpe: CpeHealth(host: cpeHost, reachable: false),
@@ -207,6 +209,7 @@ class TunStatus {
   }
 
   final TunMode mode;
+  final String adapterName;
   final TunState state;
   final TunPermission permission;
   final CpeHealth cpe;
@@ -216,6 +219,7 @@ class TunStatus {
 
   TunStatus copyWith({
     TunMode? mode,
+    String? adapterName,
     TunState? state,
     TunPermission? permission,
     CpeHealth? cpe,
@@ -225,6 +229,7 @@ class TunStatus {
   }) {
     return TunStatus(
       mode: mode ?? this.mode,
+      adapterName: adapterName ?? this.adapterName,
       state: state ?? this.state,
       permission: permission ?? this.permission,
       cpe: cpe ?? this.cpe,
@@ -239,6 +244,7 @@ class TunStatus {
     return identical(this, other) ||
         other is TunStatus &&
             other.mode == mode &&
+            other.adapterName == adapterName &&
             other.state == state &&
             other.permission == permission &&
             other.cpe == cpe &&
@@ -250,6 +256,7 @@ class TunStatus {
   @override
   int get hashCode => Object.hash(
     mode,
+    adapterName,
     state,
     permission,
     cpe,

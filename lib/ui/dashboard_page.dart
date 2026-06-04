@@ -24,6 +24,7 @@ class DashboardPage extends StatelessWidget {
         final status = tunController.status;
         final cpe = status.cpe;
         final running = status.state == TunState.running;
+        final directTun = status.adapterName == 'TUN 虚拟网卡';
         final canStart =
             !tunController.busy &&
             status.permission != TunPermission.unsupported &&
@@ -107,7 +108,7 @@ class DashboardPage extends StatelessWidget {
                               )
                             : null,
                         rows: [
-                          const _Kv('入口', 'TUN 虚拟网卡'),
+                          _Kv('入口', status.adapterName),
                           _Kv('出口', 'CPE ${profile.cpeIp}'),
                         ],
                       ),
@@ -122,9 +123,11 @@ class DashboardPage extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             _NoteCard(
-              text:
-                  '流量经虚拟网卡接管后转发到 CPE ${profile.cpeIp}。'
-                  '若连续检测不到 CPE，将自动停止并回切本机直连，不改动物理网卡的网关与 DNS。',
+              text: directTun
+                  ? '流量经虚拟网卡接管后转发到 CPE ${profile.cpeIp}。'
+                        '若连续检测不到 CPE，将自动停止并回切本机直连，不改动物理网卡的网关与 DNS。'
+                  : '当前入口为 ${status.adapterName}，需要本地 helper/service 数据面转发到 CPE ${profile.cpeIp}。'
+                        '若连续检测不到 CPE，将自动停止并回切本机直连。',
             ),
             if (status.lastError != null && status.lastError!.isNotEmpty) ...[
               const SizedBox(height: 16),

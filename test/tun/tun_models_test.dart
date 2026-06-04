@@ -6,6 +6,7 @@ void main() {
     final status = TunStatus.defaults();
 
     expect(status.mode, TunMode.tun);
+    expect(status.adapterName, 'TUN 虚拟网卡');
     expect(status.state, TunState.stopped);
     expect(status.permission, TunPermission.needsVpnConsent);
     expect(status.cpe.host, '192.168.1.140');
@@ -38,5 +39,14 @@ void main() {
     expect(updated.traffic.rxBytes, 3400);
     expect(updated.traffic.txRate, 56);
     expect(updated.traffic.rxRate, 78);
+  });
+
+  test('copyWith can override adapter label', () {
+    final status = TunStatus.defaults();
+
+    final updated = status.copyWith(adapterName: 'Windows Wintun');
+
+    expect(updated.adapterName, 'Windows Wintun');
+    expect(status.adapterName, 'TUN 虚拟网卡');
   });
 }
