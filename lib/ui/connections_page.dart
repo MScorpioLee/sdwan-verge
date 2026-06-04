@@ -660,7 +660,6 @@ class _ChartTooltip extends StatelessWidget {
               const SizedBox(height: 5),
               Text('$prefix上行：${_formatRate(sample.txRate)}'),
               Text('$prefix下行：${_formatRate(sample.rxRate)}'),
-              const Text('延迟：待接入 RTT'),
             ],
           ),
         ),
@@ -679,9 +678,9 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
   final int? hoverIndex;
 
   static Rect chartRect(Size size) => Rect.fromLTWH(
-    42,
+    24,
     28,
-    math.max(1, size.width - 92),
+    math.max(1, size.width - 74),
     math.max(1, size.height - 60),
   );
 
@@ -698,7 +697,6 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
 
     final maxRate = _niceMaxRate(samples);
     _drawYAxis(canvas, rect, maxRate);
-    _drawLatencyReference(canvas, rect);
     final txPoints = _pointsFor(
       samples,
       rect,
@@ -717,14 +715,6 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
   }
 
   void _drawAxisTitles(Canvas canvas, Rect rect) {
-    _drawText(
-      canvas,
-      '延迟ms',
-      Offset(rect.left - 2, 0),
-      color: AppColors.textPrimary,
-      fontSize: 12,
-      fontWeight: FontWeight.w600,
-    );
     _drawText(
       canvas,
       '速率',
@@ -763,15 +753,7 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
     for (var i = 0; i <= 5; i++) {
       final ratio = i / 5;
       final y = rect.bottom - rect.height * ratio;
-      final latency = (20 * ratio).round();
       final rate = (maxRate * ratio).round();
-      _drawText(
-        canvas,
-        '$latency',
-        Offset(0, y - 7),
-        color: AppColors.textSecondary,
-        fontSize: 11,
-      );
       _drawText(
         canvas,
         _formatBytes(rate),
@@ -802,22 +784,6 @@ class _IkuaiBandwidthChartPainter extends CustomPainter {
         fontSize: 11,
       );
     }
-  }
-
-  void _drawLatencyReference(Canvas canvas, Rect rect) {
-    final paint = Paint()
-      ..color = const Color(0xFF66A8FF)
-      ..strokeWidth = 1.2;
-    final y = rect.top + rect.height * 0.36;
-    _drawDashedLine(canvas, Offset(rect.left, y), Offset(rect.right, y), paint);
-    _drawText(
-      canvas,
-      'RTT 待接入',
-      Offset(rect.left + 8, y - 17),
-      color: const Color(0xFF66A8FF),
-      fontSize: 11,
-      fontWeight: FontWeight.w600,
-    );
   }
 
   List<Offset> _pointsFor(

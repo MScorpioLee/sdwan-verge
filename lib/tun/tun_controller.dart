@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import 'domain_resolver.dart';
 import 'traffic_history_store.dart';
 import 'tun_models.dart';
 import 'tun_service.dart';
@@ -10,15 +12,18 @@ class TunController extends ChangeNotifier {
   TunController({
     required TunService service,
     TrafficHistoryStore? trafficHistoryStore,
+    DomainResolver? domainResolver,
     bool retainTrafficHistory = false,
     this.failureThreshold = 3,
     this.pollInterval = const Duration(seconds: 5),
     this.startTimeout = const Duration(seconds: 8),
   }) : _service = service,
+       _domainResolver = domainResolver ?? const DefaultDomainResolver(),
        _trafficHistoryStore = trafficHistoryStore,
        _retainTrafficHistory = retainTrafficHistory;
 
   final TunService _service;
+  final DomainResolver _domainResolver;
   final TrafficHistoryStore? _trafficHistoryStore;
   final int failureThreshold;
   final Duration pollInterval;
@@ -37,6 +42,10 @@ class TunController extends ChangeNotifier {
   var _trafficBaselineTxBytes = 0;
   var _trafficBaselineRxBytes = 0;
   var _launchAtLogin = false;
+  var _connectionSessionStartedAt = _epochSeconds();
+  final Map<String, _ConnectionBaseline> _connectionBaselines = {};
+  final Map<String, String> _domainCache = {};
+  final Set<String> _domainLookupsInFlight = {};
 
   TunStatus get status => _status;
   List<TunEventLog> get logs => _logs;
@@ -49,6 +58,9 @@ class TunController extends ChangeNotifier {
   Future<void> initialize() async {
     await _runBusy(() async {
       await _prepareTrafficHistory();
+      if (!_retainTrafficHistory) {
+        _resetConnectionSession();
+      }
       _status = _withDisplayTraffic(await _service.status());
       _recordTrafficSample(_status.traffic);
       _syncPollingWithState();
@@ -71,9 +83,11 @@ class TunController extends ChangeNotifier {
     if (!retain) {
       _trafficSamples.clear();
       _trafficBaselineCaptured = false;
+      _resetConnectionSession();
       await _trafficHistoryStore?.clear();
     } else {
       _trafficBaselineCaptured = false;
+      _connectionBaselines.clear();
       await _trafficHistoryStore?.save(_trafficSamples);
     }
     notifyListeners();
@@ -176,8 +190,10 @@ class TunController extends ChangeNotifier {
   }
 
   Future<void> refreshConnections({int limit = 80}) async {
-    _connections = await _service.connections(limit: limit);
+    final connections = await _service.connections(limit: limit);
+    _connections = _withDisplayConnections(connections);
     notifyListeners();
+    unawaited(_enrichMissingDomains(_connections));
   }
 
   Future<void> installHelper() async {
@@ -290,6 +306,106 @@ class TunController extends ChangeNotifier {
     );
   }
 
+  List<TunConnection> _withDisplayConnections(List<TunConnection> connections) {
+    final adjusted = <TunConnection>[];
+    for (final connection in connections) {
+      if (!_retainTrafficHistory && _isStaleConnection(connection)) {
+        continue;
+      }
+      adjusted.add(_withDisplayConnection(_withCachedDomain(connection)));
+    }
+    return adjusted;
+  }
+
+  TunConnection _withDisplayConnection(TunConnection connection) {
+    if (_retainTrafficHistory) {
+      return connection;
+    }
+    final key = _connectionKey(connection);
+    final baseline = _connectionBaselines.putIfAbsent(
+      key,
+      () => _ConnectionBaseline(connection.txBytes, connection.rxBytes),
+    );
+    return connection.copyWith(
+      txBytes: math.max(0, connection.txBytes - baseline.txBytes),
+      rxBytes: math.max(0, connection.rxBytes - baseline.rxBytes),
+    );
+  }
+
+  TunConnection _withCachedDomain(TunConnection connection) {
+    final domain = connection.domain;
+    final host = _hostFromEndpoint(connection.target);
+    if (host == null) {
+      return connection;
+    }
+    if (domain != null && domain.isNotEmpty) {
+      _domainCache[host] = domain;
+      return connection;
+    }
+    final cached = _domainCache[host];
+    if (cached == null || cached.isEmpty) {
+      return connection;
+    }
+    return connection.copyWith(domain: cached);
+  }
+
+  bool _isStaleConnection(TunConnection connection) {
+    final lastSeen = int.tryParse(connection.lastSeen);
+    return lastSeen != null && lastSeen < _connectionSessionStartedAt;
+  }
+
+  Future<void> _enrichMissingDomains(List<TunConnection> snapshot) async {
+    final hosts = <String>{};
+    for (final connection in snapshot) {
+      if (connection.domain != null && connection.domain!.isNotEmpty) {
+        continue;
+      }
+      final host = _hostFromEndpoint(connection.target);
+      if (host != null && _looksLikeIpAddress(host)) {
+        hosts.add(host);
+      }
+    }
+    for (final host in hosts.take(12)) {
+      if (_domainCache.containsKey(host) ||
+          _domainLookupsInFlight.contains(host)) {
+        continue;
+      }
+      _domainLookupsInFlight.add(host);
+      try {
+        final domain = await _domainResolver.reverseLookup(host);
+        if (domain == null || domain.isEmpty) {
+          continue;
+        }
+        _domainCache[host] = domain;
+        var changed = false;
+        _connections = [
+          for (final connection in _connections)
+            if (_hostFromEndpoint(connection.target) == host &&
+                (connection.domain == null || connection.domain!.isEmpty))
+              (() {
+                changed = true;
+                return connection.copyWith(domain: domain);
+              })()
+            else
+              connection,
+        ];
+        if (changed) {
+          notifyListeners();
+        }
+      } finally {
+        _domainLookupsInFlight.remove(host);
+      }
+    }
+  }
+
+  void _resetConnectionSession() {
+    _connectionSessionStartedAt = _epochSeconds();
+    _connectionBaselines.clear();
+    _domainCache.clear();
+    _domainLookupsInFlight.clear();
+    _connections = const [];
+  }
+
   Future<void> _prepareTrafficHistory() async {
     if (_trafficHistoryPrepared) {
       return;
@@ -337,4 +453,47 @@ class TunController extends ChangeNotifier {
     _stopPolling();
     super.dispose();
   }
+}
+
+class _ConnectionBaseline {
+  const _ConnectionBaseline(this.txBytes, this.rxBytes);
+
+  final int txBytes;
+  final int rxBytes;
+}
+
+int _epochSeconds() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+String _connectionKey(TunConnection connection) {
+  return '${connection.proto}|${connection.source}|${connection.target}|${connection.via}';
+}
+
+String? _hostFromEndpoint(String endpoint) {
+  final text = endpoint.trim();
+  if (text.isEmpty) {
+    return null;
+  }
+  if (text.startsWith('[')) {
+    final end = text.indexOf(']');
+    if (end > 1) {
+      return text.substring(1, end);
+    }
+  }
+  final firstColon = text.indexOf(':');
+  final lastColon = text.lastIndexOf(':');
+  if (firstColon > 0 && firstColon == lastColon) {
+    return text.substring(0, firstColon);
+  }
+  return text;
+}
+
+bool _looksLikeIpAddress(String host) {
+  final ipv4Parts = host.split('.');
+  if (ipv4Parts.length == 4) {
+    return ipv4Parts.every((part) {
+      final value = int.tryParse(part);
+      return value != null && value >= 0 && value <= 255;
+    });
+  }
+  return host.contains(':') && RegExp(r'^[0-9a-fA-F:]+$').hasMatch(host);
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sdwan_client/tun/domain_resolver.dart';
 import 'package:sdwan_client/tun/tun_controller.dart';
 import 'package:sdwan_client/tun/traffic_history_store.dart';
 import 'package:sdwan_client/tun/tun_models.dart';
@@ -15,11 +16,14 @@ class FakeTunService implements TunService {
     ),
     List<CpeHealth>? healthSequence,
     this.currentStatus,
+    List<TunConnection>? connectionLogs,
     this.hangStart = false,
-  }) : healthSequence = List<CpeHealth>.from(healthSequence ?? const []);
+  }) : healthSequence = List<CpeHealth>.from(healthSequence ?? const []),
+       connectionLogs = List<TunConnection>.from(connectionLogs ?? const []);
 
   final CpeHealth health;
   final List<CpeHealth> healthSequence;
+  List<TunConnection> connectionLogs;
   final bool hangStart;
   String cpeHost = '192.168.1.140';
   bool launchAtLogin = false;
@@ -83,7 +87,7 @@ class FakeTunService implements TunService {
   @override
   Future<List<TunConnection>> connections({int limit = 80}) async {
     calls.add('connections');
-    return const [];
+    return connectionLogs.take(limit).toList();
   }
 
   @override
@@ -115,6 +119,19 @@ class FakeTunService implements TunService {
     calls.add('setLaunchAtLogin:$enabled');
     launchAtLogin = enabled;
     return launchAtLogin;
+  }
+}
+
+class FakeDomainResolver implements DomainResolver {
+  FakeDomainResolver(this.responses);
+
+  final Map<String, String?> responses;
+  final calls = <String>[];
+
+  @override
+  Future<String?> reverseLookup(String ip) async {
+    calls.add(ip);
+    return responses[ip];
   }
 }
 
@@ -387,6 +404,126 @@ void main() {
       expect(controller.trafficSamples, isEmpty);
     },
   );
+
+  test(
+    'refreshConnections reverse-resolves missing domains without replacing DNS cache hits',
+    () async {
+      final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      final service = FakeTunService(
+        connectionLogs: [
+          TunConnection(
+            lastSeen: now,
+            proto: 'TCP',
+            source: '10.255.0.2:50000',
+            target: '8.8.8.8:443',
+            via: '8.8.8.8:443',
+            txBytes: 100,
+            rxBytes: 200,
+          ),
+          TunConnection(
+            lastSeen: now,
+            proto: 'TCP',
+            source: '10.255.0.2:50001',
+            target: '93.184.216.34:443',
+            domain: 'example.com',
+            via: '93.184.216.34:443',
+            txBytes: 100,
+            rxBytes: 200,
+          ),
+        ],
+      );
+      final resolver = FakeDomainResolver({'8.8.8.8': 'dns.google'});
+      final controller = TunController(
+        service: service,
+        domainResolver: resolver,
+      );
+
+      await controller.refreshConnections();
+      await pumpEventQueue();
+
+      expect(controller.connections.first.domain, 'dns.google');
+      expect(controller.connections.last.domain, 'example.com');
+      expect(resolver.calls, ['8.8.8.8']);
+    },
+  );
+
+  test(
+    'refreshConnections drops stale entries and rebases totals when retention is off',
+    () async {
+      final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      final service = FakeTunService(
+        connectionLogs: [
+          const TunConnection(
+            lastSeen: '1',
+            proto: 'TCP',
+            source: '10.255.0.2:49999',
+            target: '17.250.97.8:443',
+            via: '17.250.97.8:443',
+            txBytes: 36000,
+            rxBytes: 261000,
+          ),
+          TunConnection(
+            lastSeen: now,
+            proto: 'TCP',
+            source: '10.255.0.2:50000',
+            target: '8.8.8.8:443',
+            via: '8.8.8.8:443',
+            txBytes: 500,
+            rxBytes: 1000,
+          ),
+        ],
+      );
+      final controller = TunController(service: service);
+
+      await controller.refreshConnections();
+      expect(controller.connections, hasLength(1));
+      expect(controller.connections.single.target, '8.8.8.8:443');
+      expect(controller.connections.single.txBytes, 0);
+      expect(controller.connections.single.rxBytes, 0);
+
+      service.connectionLogs = [
+        TunConnection(
+          lastSeen: now,
+          proto: 'TCP',
+          source: '10.255.0.2:50000',
+          target: '8.8.8.8:443',
+          via: '8.8.8.8:443',
+          txBytes: 700,
+          rxBytes: 1100,
+        ),
+      ];
+      await controller.refreshConnections();
+
+      expect(controller.connections.single.txBytes, 200);
+      expect(controller.connections.single.rxBytes, 100);
+    },
+  );
+
+  test('refreshConnections keeps helper totals when retention is on', () async {
+    final service = FakeTunService(
+      connectionLogs: const [
+        TunConnection(
+          lastSeen: '1',
+          proto: 'TCP',
+          source: '10.255.0.2:49999',
+          target: '17.250.97.8:443',
+          via: '17.250.97.8:443',
+          txBytes: 36000,
+          rxBytes: 261000,
+        ),
+      ],
+    );
+    final controller = TunController(
+      service: service,
+      retainTrafficHistory: true,
+    );
+
+    await controller.refreshConnections();
+
+    expect(controller.connections, hasLength(1));
+    expect(controller.connections.single.txBytes, 36000);
+    expect(controller.connections.single.rxBytes, 261000);
+  });
 
   test('refreshes and toggles launch-at-login preference', () async {
     final service = FakeTunService()..launchAtLogin = true;

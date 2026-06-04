@@ -66,6 +66,34 @@ class TunConnection {
   final int rxRate;
   final bool dnsRedirect;
 
+  TunConnection copyWith({
+    String? lastSeen,
+    String? proto,
+    String? source,
+    String? target,
+    Object? domain = _unset,
+    String? via,
+    int? txBytes,
+    int? rxBytes,
+    int? txRate,
+    int? rxRate,
+    bool? dnsRedirect,
+  }) {
+    return TunConnection(
+      lastSeen: lastSeen ?? this.lastSeen,
+      proto: proto ?? this.proto,
+      source: source ?? this.source,
+      target: target ?? this.target,
+      domain: domain == _unset ? this.domain : domain as String?,
+      via: via ?? this.via,
+      txBytes: txBytes ?? this.txBytes,
+      rxBytes: rxBytes ?? this.rxBytes,
+      txRate: txRate ?? this.txRate,
+      rxRate: rxRate ?? this.rxRate,
+      dnsRedirect: dnsRedirect ?? this.dnsRedirect,
+    );
+  }
+
   @override
   bool operator ==(Object other) {
     return identical(this, other) ||

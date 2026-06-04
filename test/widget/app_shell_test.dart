@@ -38,33 +38,36 @@ class FakeTunService implements TunService {
     TunEventLog(time: '2026-06-04 12:00:00', message: '开启 TUN'),
     TunEventLog(time: '2026-06-04 12:00:05', message: '自动回退'),
   ];
-  final List<TunConnection> connectionLogs = const [
-    TunConnection(
-      lastSeen: '1717473607',
-      proto: 'TCP',
-      source: '10.255.0.2:50000',
-      target: '93.184.216.34:443',
-      domain: 'example.com',
-      via: '93.184.216.34:443',
-      txBytes: 120,
-      rxBytes: 240,
-      txRate: 11,
-      rxRate: 22,
-    ),
-    TunConnection(
-      lastSeen: '1717473608',
-      proto: 'UDP',
-      source: '10.255.0.2:50001',
-      target: '8.8.8.8:53',
-      domain: 'dns.google',
-      via: '192.168.1.140:53',
-      txBytes: 60,
-      rxBytes: 72,
-      txRate: 7,
-      rxRate: 8,
-      dnsRedirect: true,
-    ),
-  ];
+  List<TunConnection> get connectionLogs {
+    final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    return [
+      TunConnection(
+        lastSeen: now,
+        proto: 'TCP',
+        source: '10.255.0.2:50000',
+        target: '93.184.216.34:443',
+        domain: 'example.com',
+        via: '93.184.216.34:443',
+        txBytes: 120,
+        rxBytes: 240,
+        txRate: 11,
+        rxRate: 22,
+      ),
+      TunConnection(
+        lastSeen: now,
+        proto: 'UDP',
+        source: '10.255.0.2:50001',
+        target: '8.8.8.8:53',
+        domain: 'dns.google',
+        via: '192.168.1.140:53',
+        txBytes: 60,
+        rxBytes: 72,
+        txRate: 7,
+        rxRate: 8,
+        dnsRedirect: true,
+      ),
+    ];
+  }
 
   @override
   void updateCpeHost(String host) {
@@ -191,6 +194,7 @@ void main() {
     expect(find.text('全部'), findsWidgets);
     expect(find.text('1小时'), findsOneWidget);
     expect(find.text('24小时'), findsOneWidget);
+    expect(find.textContaining('延迟'), findsNothing);
     expect(find.text('域名统计'), findsOneWidget);
     expect(find.text('example.com'), findsWidgets);
     expect(find.text('dns.google'), findsWidgets);
@@ -213,6 +217,13 @@ void main() {
     expect(find.text('公司名称'), findsNothing);
     expect(find.text('保留历史流量统计'), findsOneWidget);
     expect(find.text('开机自动启动'), findsOneWidget);
+
+    await tester.tap(find.text('帮助'));
+    await tester.pumpAndSettle();
+    expect(find.text('TUN 模式'), findsOneWidget);
+    expect(find.text('桌面端'), findsNothing);
+    expect(find.text('手机端'), findsNothing);
+    expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
   });
 
   testWidgets('后端不支持时禁用开启按钮并显示错误', (tester) async {
