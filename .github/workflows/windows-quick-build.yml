@@ -1,0 +1,65 @@
+name: windows-quick-build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/windows-quick-build.yml'
+      - 'windows/**'
+      - 'lib/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'scripts/package_releases.sh'
+
+concurrency:
+  group: windows-quick-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: false
+      - run: flutter --version
+      - run: flutter pub get
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows/third_party/wintun/bin/x64 | Out-Null
+          New-Item -ItemType Directory -Force windows/third_party/windivert/bin/x64 | Out-Null
+          New-Item -ItemType Directory -Force windows/third_party/windivert/include | Out-Null
+          Invoke-WebRequest "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "$env:RUNNER_TEMP\wintun.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wintun.zip" "$env:RUNNER_TEMP\wintun" -Force
+          Copy-Item "$env:RUNNER_TEMP\wintun\wintun\bin\amd64\wintun.dll" "windows\third_party\wintun\bin\x64\wintun.dll" -Force
+          Invoke-WebRequest "https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip" -OutFile "$env:RUNNER_TEMP\windivert.zip"
+          Expand-Archive "$env:RUNNER_TEMP\windivert.zip" "$env:RUNNER_TEMP\windivert" -Force
+          Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\include\windivert.h" "windows\third_party\windivert\include\windivert.h" -Force
+          Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\x64\WinDivert.dll" "windows\third_party\windivert\bin\x64\WinDivert.dll" -Force
+          Copy-Item "$env:RUNNER_TEMP\windivert\WinDivert-2.2.2-A\x64\WinDivert64.sys" "windows\third_party\windivert\bin\x64\WinDivert64.sys" -Force
+      - run: flutter build windows --release
+      - shell: pwsh
+        run: |
+          $helper = ".\build\windows\x64\runner\Release\sdwan_windows_helper.exe"
+          Get-Item $helper | Format-List FullName,Length
+          & $helper self-test
+          $code = $LASTEXITCODE
+          Write-Host "sdwan_windows_helper self-test exit code: $code"
+          if ($code -ne 0) {
+            exit $code
+          }
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/releases | Out-Null
+          choco install innosetup --no-progress -y
+          $env:SDWAN_SOURCE_DIR = (Resolve-Path "build/windows/x64/runner/Release").Path
+          $env:SDWAN_OUTPUT_DIR = (Resolve-Path "dist/releases").Path
+          $env:SDWAN_APP_VERSION = "0.1.3-dev"
+          Invoke-WebRequest "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/main/ChineseSimplified.isl" -OutFile "windows\installer\ChineseSimplified.isl"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "windows\installer\sdwan-verge.iss"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-windows-quick
+          path: dist/releases/sdwan-verge-windows-x64-setup.exe
