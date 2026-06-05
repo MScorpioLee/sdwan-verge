@@ -52,6 +52,9 @@ class Win32Window {
   // If true, closing this window will quit the application.
   void SetQuitOnClose(bool quit_on_close);
 
+  // If true, closing this window hides it and keeps the app in the tray.
+  void SetMinimizeToTrayOnClose(bool minimize_to_tray_on_close);
+
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
@@ -90,7 +93,20 @@ class Win32Window {
   // Update the window frame's theme to match the system theme.
   static void UpdateTheme(HWND const window);
 
+  // Applies the app icon to both large and small window icon slots.
+  static void ApplyWindowIcons(HWND const window);
+
+  bool AddOrUpdateTrayIcon();
+  void RemoveTrayIcon();
+  void HideToTray();
+  void RestoreFromTray();
+  void ShowTrayMenu();
+  void ExitFromTray();
+
   bool quit_on_close_ = false;
+  bool minimize_to_tray_on_close_ = false;
+  bool tray_icon_visible_ = false;
+  bool quit_requested_ = false;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

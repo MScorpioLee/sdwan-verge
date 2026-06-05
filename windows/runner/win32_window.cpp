@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <shellapi.h>
 
 #include "resource.h"
 
@@ -17,6 +18,11 @@ namespace {
 #endif
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
+constexpr const wchar_t kTrayTooltip[] = L"SD-WAN Verge";
+constexpr UINT kTrayCallbackMessage = WM_APP + 1;
+constexpr UINT kTrayIconId = 1;
+constexpr UINT kTrayMenuShow = 40001;
+constexpr UINT kTrayMenuExit = 40002;
 
 /// Registry key for app theme preference.
 ///
@@ -30,6 +36,21 @@ constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme"
 static int g_active_window_count = 0;
 
 using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
+
+HICON LoadAppIcon(int width, int height) {
+  HICON icon = reinterpret_cast<HICON>(
+      LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON),
+                IMAGE_ICON, width, height, LR_DEFAULTCOLOR | LR_SHARED));
+  if (icon != nullptr) {
+    return icon;
+  }
+  return LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+}
+
+UINT TaskbarCreatedMessage() {
+  static const UINT message = RegisterWindowMessage(L"TaskbarCreated");
+  return message;
+}
 
 // Scale helper to convert logical scaler values to physical using passed in
 // scale factor
@@ -88,7 +109,8 @@ WindowClassRegistrar* WindowClassRegistrar::instance_ = nullptr;
 
 const wchar_t* WindowClassRegistrar::GetWindowClass() {
   if (!class_registered_) {
-    WNDCLASS window_class{};
+    WNDCLASSEX window_class{};
+    window_class.cbSize = sizeof(window_class);
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.lpszClassName = kWindowClassName;
     window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -96,11 +118,13 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     window_class.cbWndExtra = 0;
     window_class.hInstance = GetModuleHandle(nullptr);
     window_class.hIcon =
-        LoadIcon(window_class.hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
+        LoadAppIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    window_class.hIconSm = LoadAppIcon(GetSystemMetrics(SM_CXSMICON),
+                                       GetSystemMetrics(SM_CYSMICON));
     window_class.hbrBackground = 0;
     window_class.lpszMenuName = nullptr;
     window_class.lpfnWndProc = Win32Window::WndProc;
-    RegisterClass(&window_class);
+    RegisterClassEx(&window_class);
     class_registered_ = true;
   }
   return kWindowClassName;
@@ -144,13 +168,19 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  ApplyWindowIcons(window);
   UpdateTheme(window);
 
   return OnCreate();
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  if (!window_handle_) {
+    return false;
+  }
+  RemoveTrayIcon();
+  ShowWindow(window_handle_, SW_SHOWNORMAL);
+  return true;
 }
 
 // static
@@ -178,11 +208,49 @@ Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
+  if (message == TaskbarCreatedMessage() && tray_icon_visible_) {
+    tray_icon_visible_ = false;
+    AddOrUpdateTrayIcon();
+    return 0;
+  }
+
   switch (message) {
+    case WM_CLOSE:
+      if (minimize_to_tray_on_close_ && !quit_requested_) {
+        HideToTray();
+        return 0;
+      }
+      break;
+
+    case kTrayCallbackMessage:
+      if (LOWORD(lparam) == WM_LBUTTONUP ||
+          LOWORD(lparam) == WM_LBUTTONDBLCLK) {
+        RestoreFromTray();
+        return 0;
+      }
+      if (LOWORD(lparam) == WM_RBUTTONUP ||
+          LOWORD(lparam) == WM_CONTEXTMENU) {
+        ShowTrayMenu();
+        return 0;
+      }
+      break;
+
+    case WM_COMMAND:
+      if (LOWORD(wparam) == kTrayMenuShow) {
+        RestoreFromTray();
+        return 0;
+      }
+      if (LOWORD(wparam) == kTrayMenuExit) {
+        ExitFromTray();
+        return 0;
+      }
+      break;
+
     case WM_DESTROY:
+      RemoveTrayIcon();
       window_handle_ = nullptr;
       Destroy();
-      if (quit_on_close_) {
+      if (quit_on_close_ || quit_requested_) {
         PostQuitMessage(0);
       }
       return 0;
@@ -263,6 +331,92 @@ void Win32Window::SetQuitOnClose(bool quit_on_close) {
   quit_on_close_ = quit_on_close;
 }
 
+void Win32Window::SetMinimizeToTrayOnClose(bool minimize_to_tray_on_close) {
+  minimize_to_tray_on_close_ = minimize_to_tray_on_close;
+  if (!minimize_to_tray_on_close_) {
+    RemoveTrayIcon();
+  }
+}
+
+bool Win32Window::AddOrUpdateTrayIcon() {
+  if (!window_handle_) {
+    return false;
+  }
+
+  NOTIFYICONDATA tray_icon{};
+  tray_icon.cbSize = sizeof(tray_icon);
+  tray_icon.hWnd = window_handle_;
+  tray_icon.uID = kTrayIconId;
+  tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+  tray_icon.uCallbackMessage = kTrayCallbackMessage;
+  tray_icon.hIcon = LoadAppIcon(GetSystemMetrics(SM_CXSMICON),
+                                GetSystemMetrics(SM_CYSMICON));
+  lstrcpynW(tray_icon.szTip, kTrayTooltip, ARRAYSIZE(tray_icon.szTip));
+
+  if (Shell_NotifyIcon(tray_icon_visible_ ? NIM_MODIFY : NIM_ADD,
+                       &tray_icon)) {
+    tray_icon_visible_ = true;
+    return true;
+  }
+  return false;
+}
+
+void Win32Window::RemoveTrayIcon() {
+  if (!tray_icon_visible_ || !window_handle_) {
+    return;
+  }
+
+  NOTIFYICONDATA tray_icon{};
+  tray_icon.cbSize = sizeof(tray_icon);
+  tray_icon.hWnd = window_handle_;
+  tray_icon.uID = kTrayIconId;
+  Shell_NotifyIcon(NIM_DELETE, &tray_icon);
+  tray_icon_visible_ = false;
+}
+
+void Win32Window::HideToTray() {
+  if (!window_handle_) {
+    return;
+  }
+  if (AddOrUpdateTrayIcon()) {
+    ShowWindow(window_handle_, SW_HIDE);
+  }
+}
+
+void Win32Window::RestoreFromTray() {
+  if (!window_handle_) {
+    return;
+  }
+  RemoveTrayIcon();
+  ShowWindow(window_handle_, SW_SHOWNORMAL);
+  SetForegroundWindow(window_handle_);
+}
+
+void Win32Window::ShowTrayMenu() {
+  if (!window_handle_) {
+    return;
+  }
+
+  POINT cursor_position{};
+  GetCursorPos(&cursor_position);
+  HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"打开");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kTrayMenuExit, L"退出");
+
+  SetForegroundWindow(window_handle_);
+  TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
+                 cursor_position.x, cursor_position.y, 0, window_handle_,
+                 nullptr);
+  DestroyMenu(menu);
+}
+
+void Win32Window::ExitFromTray() {
+  quit_requested_ = true;
+  RemoveTrayIcon();
+  Destroy();
+}
+
 bool Win32Window::OnCreate() {
   // No-op; provided for subclasses.
   return true;
@@ -270,6 +424,15 @@ bool Win32Window::OnCreate() {
 
 void Win32Window::OnDestroy() {
   // No-op; provided for subclasses.
+}
+
+void Win32Window::ApplyWindowIcons(HWND const window) {
+  SendMessage(window, WM_SETICON, ICON_SMALL,
+              reinterpret_cast<LPARAM>(LoadAppIcon(
+                  GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON))));
+  SendMessage(window, WM_SETICON, ICON_BIG,
+              reinterpret_cast<LPARAM>(LoadAppIcon(GetSystemMetrics(SM_CXICON),
+                                                   GetSystemMetrics(SM_CYICON))));
 }
 
 void Win32Window::UpdateTheme(HWND const window) {
