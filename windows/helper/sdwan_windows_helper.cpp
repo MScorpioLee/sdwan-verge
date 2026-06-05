@@ -610,6 +610,104 @@ std::string CleanAddress(const std::string& value) {
   return value;
 }
 
+bool IsIpv4Address(const std::string& host) {
+  std::istringstream stream(host);
+  std::string part;
+  int count = 0;
+  while (std::getline(stream, part, '.')) {
+    count++;
+    if (part.empty()) {
+      return false;
+    }
+    for (const char ch : part) {
+      if (!std::isdigit(static_cast<unsigned char>(ch))) {
+        return false;
+      }
+    }
+    const int value = std::atoi(part.c_str());
+    if (value < 0 || value > 255) {
+      return false;
+    }
+  }
+  return count == 4;
+}
+
+bool IsIpv4Endpoint(const std::string& endpoint) {
+  if (endpoint.empty() || endpoint.find('[') != std::string::npos ||
+      endpoint.find(']') != std::string::npos) {
+    return false;
+  }
+  const size_t first_colon = endpoint.find(':');
+  if (first_colon == std::string::npos) {
+    return IsIpv4Address(endpoint);
+  }
+  if (first_colon != endpoint.rfind(':')) {
+    return false;
+  }
+  return IsIpv4Address(endpoint.substr(0, first_colon));
+}
+
+std::string EndpointHost(const std::string& endpoint) {
+  const size_t colon = endpoint.find(':');
+  if (colon == std::string::npos) {
+    return endpoint;
+  }
+  if (colon != endpoint.rfind(':')) {
+    return "";
+  }
+  return endpoint.substr(0, colon);
+}
+
+bool ParseIpv4Octets(const std::string& host, int octets[4]) {
+  std::istringstream stream(host);
+  std::string part;
+  int count = 0;
+  while (std::getline(stream, part, '.') && count < 4) {
+    if (part.empty()) {
+      return false;
+    }
+    for (const char ch : part) {
+      if (!std::isdigit(static_cast<unsigned char>(ch))) {
+        return false;
+      }
+    }
+    octets[count++] = std::atoi(part.c_str());
+  }
+  return count == 4 && stream.eof();
+}
+
+bool IsPublicIpv4Endpoint(const std::string& endpoint) {
+  const std::string host = EndpointHost(endpoint);
+  if (host.empty() || !IsIpv4Address(host)) {
+    return false;
+  }
+  int octets[4] = {};
+  if (!ParseIpv4Octets(host, octets)) {
+    return false;
+  }
+  const int first = octets[0];
+  const int second = octets[1];
+  if (first == 0 || first == 10 || first == 127) {
+    return false;
+  }
+  if (first == 100 && second >= 64 && second <= 127) {
+    return false;
+  }
+  if (first == 169 && second == 254) {
+    return false;
+  }
+  if (first == 172 && second >= 16 && second <= 31) {
+    return false;
+  }
+  if (first == 192 && second == 168) {
+    return false;
+  }
+  if (first >= 224) {
+    return false;
+  }
+  return true;
+}
+
 std::string ConnectionsText(int limit) {
   if (limit <= 0) {
     limit = 80;
@@ -634,6 +732,12 @@ std::string ConnectionsText(int limit) {
     const std::string source = CleanAddress(parts[1]);
     const std::string target = CleanAddress(parts[2]);
     if (source.empty() || target.empty()) {
+      continue;
+    }
+    if (!IsIpv4Endpoint(source)) {
+      continue;
+    }
+    if (!IsPublicIpv4Endpoint(target)) {
       continue;
     }
     if (proto == "TCP" && parts.size() >= 4 &&

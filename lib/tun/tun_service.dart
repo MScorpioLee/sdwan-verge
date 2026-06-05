@@ -352,23 +352,38 @@ class MethodChannelTunService implements TunService {
     if (rawValue is! List) {
       return const [];
     }
-    return [
-      for (final item in rawValue)
-        if (_stringMap(item) case final value?)
-          TunConnection(
-            lastSeen: value['lastSeen']?.toString() ?? '',
-            proto: value['proto']?.toString() ?? '',
-            source: value['source']?.toString() ?? '',
-            target: value['target']?.toString() ?? '',
-            domain: _emptyToNull(value['domain']?.toString()),
-            via: value['via']?.toString() ?? '',
-            txBytes: _intFromValue(value['txBytes']),
-            rxBytes: _intFromValue(value['rxBytes']),
-            txRate: _intFromValue(value['txRate']),
-            rxRate: _intFromValue(value['rxRate']),
-            dnsRedirect: value['dnsRedirect'] as bool? ?? false,
-          ),
-    ];
+    final connections = <TunConnection>[];
+    for (final item in rawValue) {
+      final value = _stringMap(item);
+      if (value == null) {
+        continue;
+      }
+      final source = value['source']?.toString() ?? '';
+      final target = value['target']?.toString() ?? '';
+      final via = value['via']?.toString() ?? '';
+      if (!_isIpv4Endpoint(source) || !_isPublicIpv4Endpoint(target)) {
+        continue;
+      }
+      if (via.isNotEmpty && !_isIpv4Endpoint(via)) {
+        continue;
+      }
+      connections.add(
+        TunConnection(
+          lastSeen: value['lastSeen']?.toString() ?? '',
+          proto: value['proto']?.toString() ?? '',
+          source: source,
+          target: target,
+          domain: _emptyToNull(value['domain']?.toString()),
+          via: via,
+          txBytes: _intFromValue(value['txBytes']),
+          rxBytes: _intFromValue(value['rxBytes']),
+          txRate: _intFromValue(value['txRate']),
+          rxRate: _intFromValue(value['rxRate']),
+          dnsRedirect: value['dnsRedirect'] as bool? ?? false,
+        ),
+      );
+    }
+    return connections;
   }
 
   LatencyProbeResult _latencyResultFromMap(
@@ -430,4 +445,71 @@ class MethodChannelTunService implements TunService {
   }
 
   Map<String, Object?> _baseArguments() => {'cpeHost': _cpeHost};
+}
+
+bool _isIpv4Endpoint(String endpoint) {
+  final host = _endpointHost(endpoint);
+  return host != null && _isIpv4Address(host);
+}
+
+String? _endpointHost(String endpoint) {
+  final text = endpoint.trim();
+  if (text.isEmpty || text.startsWith('[') || text.contains(']')) {
+    return null;
+  }
+  final firstColon = text.indexOf(':');
+  if (firstColon >= 0) {
+    if (firstColon != text.lastIndexOf(':')) {
+      return null;
+    }
+    return text.substring(0, firstColon);
+  }
+  final dotParts = text.split('.');
+  if (dotParts.length >= 5 && int.tryParse(dotParts.last) != null) {
+    return dotParts.take(4).join('.');
+  }
+  return text;
+}
+
+bool _isIpv4Address(String host) {
+  final parts = host.split('.');
+  if (parts.length != 4) {
+    return false;
+  }
+  return parts.every((part) {
+    if (part.isEmpty) {
+      return false;
+    }
+    final value = int.tryParse(part);
+    return value != null && value >= 0 && value <= 255;
+  });
+}
+
+bool _isPublicIpv4Endpoint(String endpoint) {
+  final host = _endpointHost(endpoint);
+  if (host == null || !_isIpv4Address(host)) {
+    return false;
+  }
+  final parts = host.split('.').map(int.parse).toList(growable: false);
+  final first = parts[0];
+  final second = parts[1];
+  if (first == 0 || first == 10 || first == 127) {
+    return false;
+  }
+  if (first == 100 && second >= 64 && second <= 127) {
+    return false;
+  }
+  if (first == 169 && second == 254) {
+    return false;
+  }
+  if (first == 172 && second >= 16 && second <= 31) {
+    return false;
+  }
+  if (first == 192 && second == 168) {
+    return false;
+  }
+  if (first >= 224) {
+    return false;
+  }
+  return true;
 }

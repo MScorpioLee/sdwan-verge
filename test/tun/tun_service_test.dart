@@ -143,6 +143,78 @@ void main() {
     expect(connections.first.rxRate, 22);
   });
 
+  test('filters IPv6 connections from native response', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          expect(call.method, 'connections');
+          return [
+            {
+              'lastSeen': '1717473607',
+              'proto': 'TCP',
+              'source': '10.255.0.2:50000',
+              'target': '93.184.216.34:443',
+              'via': '93.184.216.34:443',
+            },
+            {
+              'lastSeen': '1717473608',
+              'proto': 'TCP',
+              'source': '[2400:3200::1]:50000',
+              'target': '[2606:4700:4700::1111]:443',
+              'via': '[2606:4700:4700::1111]:443',
+            },
+            {
+              'lastSeen': '1717473609',
+              'proto': 'UDP',
+              'source': 'fe80::1.5353',
+              'target': 'ff02::fb.5353',
+              'via': 'ff02::fb.5353',
+            },
+          ];
+        });
+    final service = MethodChannelTunService(channel: channel);
+
+    final connections = await service.connections(limit: 80);
+
+    expect(connections, hasLength(1));
+    expect(connections.single.target, '93.184.216.34:443');
+  });
+
+  test('filters LAN target connections from native response', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          expect(call.method, 'connections');
+          return [
+            {
+              'lastSeen': '1717473607',
+              'proto': 'TCP',
+              'source': '192.168.1.25:50000',
+              'target': '93.184.216.34:443',
+              'via': '93.184.216.34:443',
+            },
+            {
+              'lastSeen': '1717473608',
+              'proto': 'TCP',
+              'source': '192.168.1.25:50001',
+              'target': '192.168.1.140:443',
+              'via': '192.168.1.140:443',
+            },
+            {
+              'lastSeen': '1717473609',
+              'proto': 'UDP',
+              'source': '192.168.1.25:50002',
+              'target': '10.0.0.5:53',
+              'via': '10.0.0.5:53',
+            },
+          ];
+        });
+    final service = MethodChannelTunService(channel: channel);
+
+    final connections = await service.connections(limit: 80);
+
+    expect(connections, hasLength(1));
+    expect(connections.single.target, '93.184.216.34:443');
+  });
+
   test('maps native logs response into event timeline', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {

@@ -410,9 +410,69 @@ static int limit_from_call(FlMethodCall* method_call, int fallback) {
   return std::max(1, std::min(static_cast<int>(fl_value_get_int(value)), 300));
 }
 
+static gboolean endpoint_ipv4_host(const gchar* endpoint,
+                                   gchar* out,
+                                   size_t out_size) {
+  if (endpoint == nullptr || endpoint[0] == '\0' || strchr(endpoint, '[') != nullptr ||
+      strchr(endpoint, ']') != nullptr || strchr(endpoint, '*') != nullptr) {
+    return FALSE;
+  }
+  const gchar* colon = strrchr(endpoint, ':');
+  if (colon == nullptr) {
+    g_strlcpy(out, endpoint, out_size);
+  } else {
+    const size_t length = static_cast<size_t>(colon - endpoint);
+    if (length == 0 || length >= out_size) {
+      return FALSE;
+    }
+    memcpy(out, endpoint, length);
+    out[length] = '\0';
+  }
+  return safe_ipv4(out);
+}
+
+static gboolean ipv4_endpoint(const gchar* endpoint) {
+  gchar host[64] = {};
+  return endpoint_ipv4_host(endpoint, host, sizeof(host));
+}
+
+static gboolean is_public_ipv4_endpoint(const gchar* endpoint) {
+  gchar host[64] = {};
+  if (!endpoint_ipv4_host(endpoint, host, sizeof(host))) {
+    return FALSE;
+  }
+  unsigned int a = 0;
+  unsigned int b = 0;
+  unsigned int c = 0;
+  unsigned int d = 0;
+  if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 ||
+      b > 255 || c > 255 || d > 255) {
+    return FALSE;
+  }
+  if (a == 0 || a == 10 || a == 127) {
+    return FALSE;
+  }
+  if (a == 100 && b >= 64 && b <= 127) {
+    return FALSE;
+  }
+  if (a == 169 && b == 254) {
+    return FALSE;
+  }
+  if (a == 172 && b >= 16 && b <= 31) {
+    return FALSE;
+  }
+  if (a == 192 && b == 168) {
+    return FALSE;
+  }
+  if (a >= 224) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
 static FlValue* connections_value(int limit) {
   FlValue* list = fl_value_new_list();
-  g_autofree gchar* output = run_command_capture("ss -tunp 2>/dev/null");
+  g_autofree gchar* output = run_command_capture("ss -tunp -4 2>/dev/null");
   gchar** lines = g_strsplit(output, "\n", -1);
   g_autoptr(GDateTime) now = g_date_time_new_now_local();
   g_autofree gchar* time = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
@@ -437,6 +497,10 @@ static FlValue* connections_value(int limit) {
     }
     const gchar* source = tokens[4];
     const gchar* target = tokens[5];
+    if (!ipv4_endpoint(source) || !is_public_ipv4_endpoint(target)) {
+      g_strfreev(parts);
+      continue;
+    }
     FlValue* item = fl_value_new_map();
     fl_value_set_string_take(item, "lastSeen", fl_value_new_string(time));
     fl_value_set_string_take(item, "proto",

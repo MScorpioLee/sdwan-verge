@@ -28,12 +28,31 @@ void main() {
     expect(helper, contains('GetIfTable2'));
   });
 
+  test('Windows helper keeps route and connection diagnostics IPv4 only', () {
+    final helper = readHelper();
+
+    expect(helper, contains('route print -4'));
+    expect(helper, contains('IsIpv4Endpoint'));
+    expect(helper, contains('if (!IsIpv4Endpoint(source)'));
+    expect(helper, isNot(contains('tcpv6')));
+    expect(helper, isNot(contains('udpv6')));
+  });
+
+  test('Windows helper excludes LAN targets from connection diagnostics', () {
+    final helper = readHelper();
+
+    expect(helper, contains('IsPublicIpv4Endpoint'));
+    expect(helper, contains('if (!IsPublicIpv4Endpoint(target))'));
+  });
+
   test('Windows helper keeps SDK headers in a warning-clean order', () {
     final helper = readHelper();
 
     expect(helper, isNot(contains('#define UNICODE')));
-    expect(helper.indexOf('#include <iphlpapi.h>'),
-        lessThan(helper.indexOf('#include <icmpapi.h>')));
+    expect(
+      helper.indexOf('#include <iphlpapi.h>'),
+      lessThan(helper.indexOf('#include <icmpapi.h>')),
+    );
   });
 
   test('Windows helper treats missing service as install-needed state', () {
@@ -58,18 +77,24 @@ void main() {
     expect(helper, contains('CreateNamedPipeW'));
   });
 
-  test('Windows install refreshes existing service and waits for pipe readiness', () {
-    final helper = readHelper();
+  test(
+    'Windows install refreshes existing service and waits for pipe readiness',
+    () {
+      final helper = readHelper();
 
-    expect(helper, contains('StopServiceIfRunning'));
-    expect(helper, contains('StartServiceAndWait'));
-    expect(helper, contains('WaitForPipeReady'));
-  });
+      expect(helper, contains('StopServiceIfRunning'));
+      expect(helper, contains('StartServiceAndWait'));
+      expect(helper, contains('WaitForPipeReady'));
+    },
+  );
 
   test('Windows health rollback is based on CPE reachability', () {
     final helper = readHelper();
 
     expect(helper, contains('if (!l1)'));
-    expect(helper, contains('CPE health failed, half-route rollback completed'));
+    expect(
+      helper,
+      contains('CPE health failed, half-route rollback completed'),
+    );
   });
 }

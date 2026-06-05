@@ -35,6 +35,84 @@ static bool safe_ipv4(const char *value) {
   return value != NULL && inet_pton(AF_INET, value, &address) == 1;
 }
 
+static bool all_digits(const char *value) {
+  if (value == NULL || *value == '\0') {
+    return false;
+  }
+  for (const char *cursor = value; *cursor != '\0'; cursor++) {
+    if (*cursor < '0' || *cursor > '9') {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool ipv4_endpoint(const char *value) {
+  if (value == NULL || *value == '\0' || strchr(value, ':') != NULL ||
+      strchr(value, '[') != NULL || strchr(value, ']') != NULL ||
+      strchr(value, '*') != NULL) {
+    return false;
+  }
+  if (safe_ipv4(value)) {
+    return true;
+  }
+  char host[128];
+  snprintf(host, sizeof(host), "%s", value);
+  char *last_dot = strrchr(host, '.');
+  if (last_dot == NULL || !all_digits(last_dot + 1)) {
+    return false;
+  }
+  *last_dot = '\0';
+  return safe_ipv4(host);
+}
+
+static bool endpoint_host(const char *value, char *out, size_t out_size) {
+  if (!ipv4_endpoint(value)) {
+    return false;
+  }
+  snprintf(out, out_size, "%s", value);
+  if (safe_ipv4(out)) {
+    return true;
+  }
+  char *last_dot = strrchr(out, '.');
+  if (last_dot == NULL) {
+    return false;
+  }
+  *last_dot = '\0';
+  return safe_ipv4(out);
+}
+
+static bool public_ipv4_endpoint(const char *value) {
+  char host[128];
+  if (!endpoint_host(value, host, sizeof(host))) {
+    return false;
+  }
+  unsigned int a = 0, b = 0, c = 0, d = 0;
+  if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+      a > 255 || b > 255 || c > 255 || d > 255) {
+    return false;
+  }
+  if (a == 0 || a == 10 || a == 127) {
+    return false;
+  }
+  if (a == 100 && b >= 64 && b <= 127) {
+    return false;
+  }
+  if (a == 169 && b == 254) {
+    return false;
+  }
+  if (a == 172 && b >= 16 && b <= 31) {
+    return false;
+  }
+  if (a == 192 && b == 168) {
+    return false;
+  }
+  if (a >= 224) {
+    return false;
+  }
+  return true;
+}
+
 static void ensure_state_dir(const HelperConfig *config) {
   mkdir(config->state_dir, 0777);
   chmod(config->state_dir, 0777);
@@ -601,7 +679,7 @@ static int command_logs(const HelperConfig *config, int limit) {
 }
 
 static void print_system_connections(int limit) {
-  char *text = capture_command("/usr/sbin/netstat -an -p tcp 2>/dev/null; /usr/sbin/netstat -an -p udp 2>/dev/null");
+  char *text = capture_command("/usr/sbin/netstat -an -f inet -p tcp 2>/dev/null; /usr/sbin/netstat -an -f inet -p udp 2>/dev/null");
   char *cursor = text;
   int count = 0;
   char ts[32];
@@ -617,6 +695,9 @@ static void print_system_connections(int limit) {
       continue;
     }
     if (matched >= 6 && (strcmp(state, "LISTEN") == 0 || strcmp(state, "TIME_WAIT") == 0)) {
+      continue;
+    }
+    if (!ipv4_endpoint(local) || !public_ipv4_endpoint(foreign)) {
       continue;
     }
     printf("lastSeen=%s|proto=%s|source=%s|target=%s|domain=|via=%s|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n",

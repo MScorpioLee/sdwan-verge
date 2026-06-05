@@ -40,7 +40,8 @@ void main() {
     expect(runner, contains('ip route replace 128.0.0.0/1 via'));
     expect(runner, contains('ip route del 0.0.0.0/1'));
     expect(runner, contains('/proc/net/dev'));
-    expect(runner, contains('ss -tunp'));
+    expect(runner, contains('ss -tunp -4'));
+    expect(runner, contains('is_public_ipv4_endpoint'));
   });
 
   test('Linux runner has a shutdown hook to stop acceleration before exit', () {

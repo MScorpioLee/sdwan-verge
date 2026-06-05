@@ -17,6 +17,10 @@ grep -q "/sbin/route -n add -net 128.0.0.0 -netmask 128.0.0.0 192.168.1.140" <<<
 ! grep -q "/dev/bpf" <<<"$PLAN_OUTPUT"
 grep -q "PLAN_ONLY_NO_CHANGES_APPLIED" <<<"$PLAN_OUTPUT"
 
+grep -q "/usr/sbin/netstat -an -f inet -p tcp" "$ROOT_DIR/macos/Helper/sdwan_macos_helper.c"
+grep -q "/usr/sbin/netstat -an -f inet -p udp" "$ROOT_DIR/macos/Helper/sdwan_macos_helper.c"
+grep -q "public_ipv4_endpoint(foreign)" "$ROOT_DIR/macos/Helper/sdwan_macos_helper.c"
+
 STATUS_OUTPUT="$("$HELPER" status)"
 grep -q "permission=ready" <<<"$STATUS_OUTPUT"
 grep -q "tx_bytes=" <<<"$STATUS_OUTPUT"
