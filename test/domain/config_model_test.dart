@@ -13,8 +13,26 @@ void main() {
     expect(active.cpeIp, '192.168.1.140');
     expect(active.primaryDns, '223.5.5.5');
     expect(active.secondaryDns, '114.114.114.114');
-    expect(active.syncDnsWithAcceleration, isFalse);
+    expect(active.syncDnsWithAcceleration, isTrue);
     expect(config.retainTrafficHistory, isFalse);
+  });
+
+  test('legacy profile without DNS sync field defaults to CPE DNS sync', () {
+    final restored = AppConfig.fromJson({
+      'activeProfileId': 'default',
+      'profiles': [
+        {
+          'id': 'default',
+          'name': '默认加速配置',
+          'companyName': '',
+          'cpeIp': '192.168.1.140',
+          'primaryDns': '223.5.5.5',
+          'secondaryDns': '114.114.114.114',
+        },
+      ],
+    });
+
+    expect(restored.activeProfile.syncDnsWithAcceleration, isTrue);
   });
 
   test('serializes and deserializes app config', () {

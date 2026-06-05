@@ -16,7 +16,7 @@ class SdwanProfile {
     cpeIp: '192.168.1.140',
     primaryDns: '223.5.5.5',
     secondaryDns: '114.114.114.114',
-    syncDnsWithAcceleration: false,
+    syncDnsWithAcceleration: true,
   );
 
   factory SdwanProfile.fromJson(Map<String, Object?> json) => SdwanProfile(
@@ -26,7 +26,7 @@ class SdwanProfile {
     cpeIp: json['cpeIp'] as String? ?? '192.168.1.140',
     primaryDns: json['primaryDns'] as String? ?? '223.5.5.5',
     secondaryDns: json['secondaryDns'] as String? ?? '114.114.114.114',
-    syncDnsWithAcceleration: json['syncDnsWithAcceleration'] as bool? ?? false,
+    syncDnsWithAcceleration: json['syncDnsWithAcceleration'] as bool? ?? true,
   );
 
   final String id;

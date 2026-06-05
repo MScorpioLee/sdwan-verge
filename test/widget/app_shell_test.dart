@@ -270,7 +270,7 @@ void main() {
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
   });
 
-  testWidgets('设置页保存 DNS 跟随 CPE 开关', (tester) async {
+  testWidgets('设置页默认开启 DNS 跟随 CPE 且可关闭保存', (tester) async {
     tester.view.physicalSize = const Size(1200, 2200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -283,6 +283,9 @@ void main() {
       domainResolver: const EmptyDomainResolver(),
     );
     await configController.initialize();
+    tunController.setSyncDnsWithAcceleration(
+      configController.config.activeProfile.syncDnsWithAcceleration,
+    );
     await tunController.initialize();
 
     await tester.pumpWidget(
@@ -297,13 +300,14 @@ void main() {
 
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
+    expect(service.syncDnsWithAcceleration, isTrue);
     await tester.tap(find.byKey(const ValueKey('sync-dns-switch')));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '保存配置'));
     await tester.pumpAndSettle();
 
-    expect(store.config.activeProfile.syncDnsWithAcceleration, isTrue);
-    expect(service.syncDnsWithAcceleration, isTrue);
+    expect(store.config.activeProfile.syncDnsWithAcceleration, isFalse);
+    expect(service.syncDnsWithAcceleration, isFalse);
   });
 
   testWidgets('连接页单连接速率缺失时摘要使用接口总速率', (tester) async {
