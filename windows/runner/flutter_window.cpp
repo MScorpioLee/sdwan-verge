@@ -19,6 +19,7 @@
 namespace {
 constexpr char kTunChannelName[] = "sdwan_client/tun";
 constexpr char kDefaultCpeHost[] = "192.168.1.140";
+std::string g_last_cpe_host = kDefaultCpeHost;
 
 std::string CpeHostFromArgs(const flutter::EncodableValue* args) {
   if (!args) {
@@ -414,6 +415,21 @@ bool BoolArg(const flutter::EncodableValue* args, const std::string& key,
   const auto* value = std::get_if<bool>(&entry->second);
   return value == nullptr ? fallback : *value;
 }
+
+bool IsAccelerationRunning() {
+  const auto values =
+      ParseKeyValueLines(RunHelper(HelperArgs(L"status", g_last_cpe_host)));
+  const std::string state = StringValue(values, "state", "stopped");
+  return state == "running" || state == "starting";
+}
+
+void ToggleAccelerationFromTray() {
+  if (IsAccelerationRunning()) {
+    RunHelper(HelperArgs(L"stop", g_last_cpe_host));
+  } else {
+    RunHelper(HelperArgs(L"start", g_last_cpe_host));
+  }
+}
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -441,12 +457,16 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), kTunChannelName,
           &flutter::StandardMethodCodec::GetInstance());
-  tun_channel_->SetMethodCallHandler([](const auto& call, auto result) {
+  SetTrayAccelerationHandlers(IsAccelerationRunning, ToggleAccelerationFromTray);
+  tun_channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const std::string& method = call.method_name();
     const std::string host = CpeHostFromArgs(call.arguments());
+    g_last_cpe_host = host;
     if (method == "status") {
-      result->Success(StatusFromText(RunHelper(HelperArgs(L"status", host)),
-                                     host));
+      const auto status =
+          StatusFromText(RunHelper(HelperArgs(L"status", host)), host);
+      RefreshTrayIcon();
+      result->Success(status);
     } else if (method == "healthCheck") {
       const auto values =
           ParseKeyValueLines(RunHelper(HelperArgs(L"health", host)));
@@ -473,11 +493,15 @@ bool FlutterWindow::OnCreate() {
                                     "lastError=helper uninstall was cancelled\n";
       result->Success(StatusFromText(text, host));
     } else if (method == "start") {
-      result->Success(
-          StatusFromText(RunHelper(HelperArgs(L"start", host)), host));
+      const auto status =
+          StatusFromText(RunHelper(HelperArgs(L"start", host)), host);
+      RefreshTrayIcon();
+      result->Success(status);
     } else if (method == "stop") {
-      result->Success(
-          StatusFromText(RunHelper(HelperArgs(L"stop", host)), host));
+      const auto status =
+          StatusFromText(RunHelper(HelperArgs(L"stop", host)), host);
+      RefreshTrayIcon();
+      result->Success(status);
     } else if (method == "launchAtLoginStatus") {
       result->Success(flutter::EncodableValue(LaunchAtLoginEnabled()));
     } else if (method == "setLaunchAtLogin") {

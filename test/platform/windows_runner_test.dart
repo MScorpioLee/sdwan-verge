@@ -27,6 +27,20 @@ void main() {
     expect(win32Window, contains('NIM_DELETE'));
     expect(win32Window, contains('WM_CLOSE'));
     expect(win32Window, contains('TrackPopupMenu'));
+    expect(win32Window, contains('kTrayMenuToggleAcceleration'));
+    expect(win32Window, contains('关闭加速'));
     expect(win32Window, contains('退出'));
+  });
+
+  test('Windows tray switches icon by acceleration state', () {
+    final resourceHeader = read('windows/runner/resource.h');
+    final resources = read('windows/runner/Runner.rc');
+    final win32Window = read('windows/runner/win32_window.cpp');
+
+    expect(resourceHeader, contains('IDI_TRAY_ACTIVE'));
+    expect(resourceHeader, contains('IDI_TRAY_IDLE'));
+    expect(resources, contains('resources\\\\tray_active.ico'));
+    expect(resources, contains('resources\\\\tray_idle.ico'));
+    expect(win32Window, contains('TrayIconResource'));
   });
 }

@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 #include <shellapi.h>
+#include <utility>
 
 #include "resource.h"
 
@@ -22,7 +23,8 @@ constexpr const wchar_t kTrayTooltip[] = L"SD-WAN Verge";
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT kTrayMenuShow = 40001;
-constexpr UINT kTrayMenuExit = 40002;
+constexpr UINT kTrayMenuToggleAcceleration = 40002;
+constexpr UINT kTrayMenuExit = 40003;
 
 /// Registry key for app theme preference.
 ///
@@ -37,14 +39,18 @@ static int g_active_window_count = 0;
 
 using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
 
-HICON LoadAppIcon(int width, int height) {
+HICON LoadIconResource(int resource_id, int width, int height) {
   HICON icon = reinterpret_cast<HICON>(
-      LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON),
+      LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(resource_id),
                 IMAGE_ICON, width, height, LR_DEFAULTCOLOR | LR_SHARED));
   if (icon != nullptr) {
     return icon;
   }
-  return LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+  return LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(resource_id));
+}
+
+HICON LoadAppIcon(int width, int height) {
+  return LoadIconResource(IDI_APP_ICON, width, height);
 }
 
 UINT TaskbarCreatedMessage() {
@@ -240,6 +246,13 @@ Win32Window::MessageHandler(HWND hwnd,
         RestoreFromTray();
         return 0;
       }
+      if (LOWORD(wparam) == kTrayMenuToggleAcceleration) {
+        if (tray_toggle_handler_) {
+          tray_toggle_handler_();
+        }
+        RefreshTrayIcon();
+        return 0;
+      }
       if (LOWORD(wparam) == kTrayMenuExit) {
         ExitFromTray();
         return 0;
@@ -338,6 +351,20 @@ void Win32Window::SetMinimizeToTrayOnClose(bool minimize_to_tray_on_close) {
   }
 }
 
+void Win32Window::SetTrayAccelerationHandlers(
+    std::function<bool()> status_provider,
+    std::function<void()> toggle_handler) {
+  tray_status_provider_ = std::move(status_provider);
+  tray_toggle_handler_ = std::move(toggle_handler);
+  RefreshTrayIcon();
+}
+
+void Win32Window::RefreshTrayIcon() {
+  if (tray_icon_visible_) {
+    AddOrUpdateTrayIcon();
+  }
+}
+
 bool Win32Window::AddOrUpdateTrayIcon() {
   if (!window_handle_) {
     return false;
@@ -349,9 +376,13 @@ bool Win32Window::AddOrUpdateTrayIcon() {
   tray_icon.uID = kTrayIconId;
   tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   tray_icon.uCallbackMessage = kTrayCallbackMessage;
-  tray_icon.hIcon = LoadAppIcon(GetSystemMetrics(SM_CXSMICON),
-                                GetSystemMetrics(SM_CYSMICON));
-  lstrcpynW(tray_icon.szTip, kTrayTooltip, ARRAYSIZE(tray_icon.szTip));
+  tray_icon.hIcon = LoadIconResource(TrayIconResource(),
+                                     GetSystemMetrics(SM_CXSMICON),
+                                     GetSystemMetrics(SM_CYSMICON));
+  lstrcpynW(tray_icon.szTip,
+            IsTrayAccelerationRunning() ? L"SD-WAN Verge - 已加速"
+                                        : kTrayTooltip,
+            ARRAYSIZE(tray_icon.szTip));
 
   if (Shell_NotifyIcon(tray_icon_visible_ ? NIM_MODIFY : NIM_ADD,
                        &tray_icon)) {
@@ -401,6 +432,7 @@ void Win32Window::ShowTrayMenu() {
   GetCursorPos(&cursor_position);
   HMENU menu = CreatePopupMenu();
   AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"打开");
+  AppendMenuW(menu, MF_STRING, kTrayMenuToggleAcceleration, TrayToggleLabel());
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kTrayMenuExit, L"退出");
 
@@ -415,6 +447,18 @@ void Win32Window::ExitFromTray() {
   quit_requested_ = true;
   RemoveTrayIcon();
   Destroy();
+}
+
+bool Win32Window::IsTrayAccelerationRunning() const {
+  return tray_status_provider_ ? tray_status_provider_() : false;
+}
+
+const wchar_t* Win32Window::TrayToggleLabel() const {
+  return IsTrayAccelerationRunning() ? L"关闭加速" : L"开启加速";
+}
+
+int Win32Window::TrayIconResource() const {
+  return IsTrayAccelerationRunning() ? IDI_TRAY_ACTIVE : IDI_TRAY_IDLE;
 }
 
 bool Win32Window::OnCreate() {

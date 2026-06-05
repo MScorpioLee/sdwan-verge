@@ -2,7 +2,7 @@ import Cocoa
 import FlutterMacOS
 
 @main
-class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
+class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   private let tunChannelName = "sdwan_client/tun"
   private let defaultCpeHost = "192.168.1.140"
   private let helperName = "sdwan-macos-helper"
@@ -10,6 +10,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   private let launchAgentIdentifier = "com.sdwan.verge.launcher"
   private var tunChannel: FlutterMethodChannel?
   private var statusItem: NSStatusItem?
+  private var statusToggleItem: NSMenuItem?
+  private var lastCpeHost = "192.168.1.140"
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
@@ -58,9 +60,12 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   }
 
   private func handleTunCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    lastCpeHost = cpeHost(from: call.arguments)
     switch call.method {
     case "status":
-      result(helperStatus(call.arguments))
+      let status = helperStatus(call.arguments)
+      updateStatusItemAppearance()
+      result(status)
     case "healthCheck":
       result(helperHealth(call.arguments))
     case "logs":
@@ -72,9 +77,13 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     case "uninstallHelper":
       result(uninstallHelper(call.arguments))
     case "start":
-      result(startHelper(call.arguments))
+      let status = startHelper(call.arguments)
+      updateStatusItemAppearance()
+      result(status)
     case "stop":
-      result(stopHelper(call.arguments))
+      let status = stopHelper(call.arguments)
+      updateStatusItemAppearance()
+      result(status)
     case "launchAtLoginStatus":
       result(launchAtLoginEnabled())
     case "setLaunchAtLogin":
@@ -90,9 +99,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
 
   private func setupStatusItem() {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    item.button?.title = "SD"
     item.button?.toolTip = "SD-WAN"
     let menu = NSMenu()
+    menu.delegate = self
     let showItem = NSMenuItem(
       title: "显示主窗口",
       action: #selector(showMainWindow(_:)),
@@ -100,6 +109,14 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     )
     showItem.target = self
     menu.addItem(showItem)
+    let toggleItem = NSMenuItem(
+      title: "关闭加速",
+      action: #selector(toggleAccelerationFromStatusMenu(_:)),
+      keyEquivalent: ""
+    )
+    toggleItem.target = self
+    menu.addItem(toggleItem)
+    statusToggleItem = toggleItem
     menu.addItem(NSMenuItem.separator())
     let quitItem = NSMenuItem(
       title: "退出",
@@ -110,6 +127,11 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     menu.addItem(quitItem)
     item.menu = menu
     statusItem = item
+    updateStatusItemAppearance()
+  }
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    updateStatusItemAppearance()
   }
 
   @objc private func showMainWindow(_ sender: Any?) {
@@ -123,6 +145,54 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
 
   @objc private func quitFromStatusMenu(_ sender: Any?) {
     NSApp.terminate(nil)
+  }
+
+  @objc private func toggleAccelerationFromStatusMenu(_ sender: Any?) {
+    statusToggleItem?.isEnabled = false
+    let arguments = statusMenuArguments()
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      guard let self else {
+        return
+      }
+      if self.isAccelerationRunning(arguments: arguments) {
+        _ = self.stopHelper(arguments)
+      } else {
+        _ = self.startHelper(arguments)
+      }
+      DispatchQueue.main.async { [weak self] in
+        self?.statusToggleItem?.isEnabled = true
+        self?.updateStatusItemAppearance()
+      }
+    }
+  }
+
+  private func statusMenuArguments() -> [String: Any] {
+    ["cpeHost": lastCpeHost]
+  }
+
+  private func isAccelerationRunning(arguments: Any? = nil) -> Bool {
+    let status = helperStatus(arguments ?? statusMenuArguments())
+    let state = status["state"] as? String
+    return state == "running" || state == "starting"
+  }
+
+  private func updateStatusItemAppearance() {
+    let running = isAccelerationRunning()
+    statusToggleItem?.title = running ? "关闭加速" : "开启加速"
+    statusItem?.button?.toolTip = running ? "SD-WAN Verge - 已加速" : "SD-WAN Verge"
+    if #available(macOS 11.0, *) {
+      let symbolName = running ? "bolt.circle.fill" : "bolt.circle"
+      statusItem?.button?.image = NSImage(
+        systemSymbolName: symbolName,
+        accessibilityDescription: running ? "已加速" : "未加速"
+      )
+      statusItem?.button?.imagePosition = .imageOnly
+      statusItem?.button?.contentTintColor = running ? .systemGreen : .secondaryLabelColor
+      statusItem?.button?.title = ""
+    } else {
+      statusItem?.button?.image = nil
+      statusItem?.button?.title = running ? "SD+" : "SD"
+    }
   }
 
   private func unsupportedStatus(

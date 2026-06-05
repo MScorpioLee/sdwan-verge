@@ -145,6 +145,25 @@ def make_master(size: int = MASTER_SIZE) -> bytearray:
     return buf
 
 
+def make_tray_master(running: bool, size: int = MASTER_SIZE) -> bytearray:
+    buf = make_master(size)
+    if not running:
+        for i in range(0, len(buf), 4):
+            gray = round(buf[i] * 0.299 + buf[i + 1] * 0.587 + buf[i + 2] * 0.114)
+            buf[i] = blend(gray, 90, 0.18)
+            buf[i + 1] = blend(gray, 101, 0.18)
+            buf[i + 2] = blend(gray, 119, 0.18)
+        dot = (148, 163, 184, 255)
+        dot_inner = (241, 245, 249, 255)
+    else:
+        dot = (34, 197, 94, 255)
+        dot_inner = (240, 253, 244, 255)
+    draw_circle(buf, size, (0.72, 0.28), 0.105, (15, 23, 42, 68))
+    draw_circle(buf, size, (0.72, 0.28), 0.086, dot)
+    draw_circle(buf, size, (0.72, 0.28), 0.038, dot_inner)
+    return buf
+
+
 def resize_bilinear(src: bytearray, src_size: int, dst_size: int) -> bytearray:
     if src_size == dst_size:
         return bytearray(src)
@@ -226,12 +245,23 @@ def icon_size(image: dict[str, str]) -> int:
 
 def main() -> None:
     master = make_master()
+    tray_active_master = make_tray_master(running=True)
+    tray_idle_master = make_tray_master(running=False)
     cache: dict[int, bytearray] = {}
+    tray_active_cache: dict[int, bytearray] = {}
+    tray_idle_cache: dict[int, bytearray] = {}
 
     def image(size: int) -> bytearray:
         if size not in cache:
             cache[size] = resize_bilinear(master, MASTER_SIZE, size)
         return cache[size]
+
+    def tray_image(size: int, running: bool) -> bytearray:
+        cache_for_state = tray_active_cache if running else tray_idle_cache
+        if size not in cache_for_state:
+            source = tray_active_master if running else tray_idle_master
+            cache_for_state[size] = resize_bilinear(source, MASTER_SIZE, size)
+        return cache_for_state[size]
 
     def generate_appicon_set(path: Path) -> None:
         contents = json.loads((path / "Contents.json").read_text())
@@ -267,6 +297,13 @@ def main() -> None:
     for size in [16, 24, 32, 48, 64, 128, 256]:
         ico_images.append((size, png_bytes(size, size, image(size))))
     write_icon(ROOT / "windows/runner/resources/app_icon.ico", ico_images)
+
+    for running, name in [(True, "active"), (False, "idle")]:
+        tray_ico_images = []
+        for size in [16, 20, 24, 32, 48, 64, 128, 256]:
+            tray_ico_images.append((size, png_bytes(size, size, tray_image(size, running))))
+        write_icon(ROOT / f"windows/runner/resources/tray_{name}.ico", tray_ico_images)
+        write_png(ROOT / f"linux/runner/resources/tray-{name}.png", 64, tray_image(64, running))
 
 
 if __name__ == "__main__":

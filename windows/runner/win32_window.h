@@ -55,6 +55,10 @@ class Win32Window {
   // If true, closing this window hides it and keeps the app in the tray.
   void SetMinimizeToTrayOnClose(bool minimize_to_tray_on_close);
 
+  void SetTrayAccelerationHandlers(std::function<bool()> status_provider,
+                                   std::function<void()> toggle_handler);
+  void RefreshTrayIcon();
+
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
@@ -102,11 +106,16 @@ class Win32Window {
   void RestoreFromTray();
   void ShowTrayMenu();
   void ExitFromTray();
+  bool IsTrayAccelerationRunning() const;
+  const wchar_t* TrayToggleLabel() const;
+  int TrayIconResource() const;
 
   bool quit_on_close_ = false;
   bool minimize_to_tray_on_close_ = false;
   bool tray_icon_visible_ = false;
   bool quit_requested_ = false;
+  std::function<bool()> tray_status_provider_;
+  std::function<void()> tray_toggle_handler_;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;
