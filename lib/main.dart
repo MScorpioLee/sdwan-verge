@@ -15,6 +15,9 @@ Future<void> main() async {
   final tunService = MethodChannelTunService(
     defaultCpeHost: configController.config.activeProfile.cpeIp,
   );
+  tunService.updateDnsSync(
+    configController.config.activeProfile.syncDnsWithAcceleration,
+  );
   final tunController = TunController(
     service: tunService,
     trafficHistoryStore: TrafficHistoryRepository(),

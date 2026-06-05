@@ -7,6 +7,7 @@ import 'tun_models.dart';
 
 abstract interface class TunService {
   void updateCpeHost(String host);
+  void updateDnsSync(bool enabled);
   Future<TunStatus> status();
   Future<CpeHealth> healthCheck();
   Future<List<TunEventLog>> logs({int limit = 80});
@@ -36,6 +37,7 @@ class MethodChannelTunService implements TunService {
   final MethodChannel _channel;
   final LatencyProbeClient _latencyProbeClient;
   String _cpeHost;
+  bool _syncDns = false;
 
   String get defaultCpeHost => _cpeHost;
 
@@ -45,6 +47,11 @@ class MethodChannelTunService implements TunService {
     if (trimmed.isNotEmpty) {
       _cpeHost = trimmed;
     }
+  }
+
+  @override
+  void updateDnsSync(bool enabled) {
+    _syncDns = enabled;
   }
 
   @override
@@ -450,7 +457,10 @@ class MethodChannelTunService implements TunService {
     return value;
   }
 
-  Map<String, Object?> _baseArguments() => {'cpeHost': _cpeHost};
+  Map<String, Object?> _baseArguments() => {
+    'cpeHost': _cpeHost,
+    'syncDns': _syncDns,
+  };
 }
 
 bool _isIpv4Endpoint(String endpoint) {

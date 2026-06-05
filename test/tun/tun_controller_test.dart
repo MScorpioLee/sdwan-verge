@@ -27,8 +27,15 @@ class FakeTunService implements TunService {
   final bool hangStart;
   String cpeHost = '192.168.1.140';
   bool launchAtLogin = false;
+  bool syncDnsWithAcceleration = false;
   TunStatus? currentStatus;
   final calls = <String>[];
+
+  @override
+  void updateDnsSync(bool enabled) {
+    calls.add('updateDnsSync:$enabled');
+    syncDnsWithAcceleration = enabled;
+  }
 
   @override
   void updateCpeHost(String host) {
@@ -201,6 +208,17 @@ void main() {
     expect(service.calls, ['status', 'healthCheck', 'start', 'status']);
     expect(controller.status.state, TunState.running);
     expect(controller.status.cpe.reachable, isTrue);
+  });
+
+  test('updates DNS sync preference on service', () async {
+    final service = FakeTunService();
+    final controller = TunController(service: service);
+
+    controller.setSyncDnsWithAcceleration(true);
+    await controller.start();
+
+    expect(service.syncDnsWithAcceleration, isTrue);
+    expect(service.calls, contains('updateDnsSync:true'));
   });
 
   test(

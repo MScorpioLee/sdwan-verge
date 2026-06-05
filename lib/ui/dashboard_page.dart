@@ -131,7 +131,7 @@ class DashboardPage extends StatelessWidget {
             _NoteCard(
               text: halfRoute
                   ? 'IPv4 流量通过系统半路由交给 CPE ${profile.cpeIp}，源 IP 保持不变，由 CPE 负责分流。'
-                        '若连续检测不到 CPE，将自动删除半路由并回切本机直连，本轮不改 DNS。'
+                        '若连续检测不到 CPE，将自动删除半路由并回切本机直连；DNS 可在设置中选择跟随 CPE。'
                   : '当前入口为 ${status.adapterName}，需要本地 helper/service 数据面转发到 CPE ${profile.cpeIp}。'
                         '若连续检测不到 CPE，将自动停止并回切本机直连。',
             ),

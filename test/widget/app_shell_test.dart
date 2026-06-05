@@ -32,6 +32,7 @@ class FakeTunService implements TunService {
 
   TunStatus? currentStatus;
   String cpeHost = '192.168.1.140';
+  bool syncDnsWithAcceleration = false;
   bool launchAtLogin = false;
   final CpeHealth health;
   final List<TunEventLog> eventLogs = const [
@@ -67,6 +68,11 @@ class FakeTunService implements TunService {
         dnsRedirect: true,
       ),
     ];
+  }
+
+  @override
+  void updateDnsSync(bool enabled) {
+    syncDnsWithAcceleration = enabled;
   }
 
   @override
@@ -239,14 +245,48 @@ void main() {
     expect(find.text('CPE 地址'), findsOneWidget);
     expect(find.text('公司名称'), findsNothing);
     expect(find.text('保留历史流量统计'), findsOneWidget);
+    expect(find.text('DNS 跟随 CPE'), findsOneWidget);
     expect(find.text('开机自动启动'), findsOneWidget);
 
     await tester.tap(find.text('帮助'));
     await tester.pumpAndSettle();
-    expect(find.text('IPv4 TUN 模式'), findsOneWidget);
+    expect(find.text('IPv4 半路由模式'), findsOneWidget);
     expect(find.text('桌面端'), findsNothing);
     expect(find.text('手机端'), findsNothing);
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
+  });
+
+  testWidgets('设置页保存 DNS 跟随 CPE 开关', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final store = MemoryConfigStore();
+    final service = FakeTunService();
+    final configController = AppConfigController(configStore: store);
+    final tunController = TunController(service: service);
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('sync-dns-switch')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '保存配置'));
+    await tester.pumpAndSettle();
+
+    expect(store.config.activeProfile.syncDnsWithAcceleration, isTrue);
+    expect(service.syncDnsWithAcceleration, isTrue);
   });
 
   testWidgets('后端不支持时禁用开启按钮并显示错误', (tester) async {

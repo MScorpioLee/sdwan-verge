@@ -46,6 +46,7 @@ struct Runtime {
   bool stop_requested = false;
   int health_failures = 0;
   std::thread health_thread;
+  bool dns_synced = false;
 
   uint64_t base_tx = 0;
   uint64_t base_rx = 0;
@@ -176,6 +177,82 @@ bool RunCommand(const std::string& command) {
   std::string full = "cmd.exe /C " + command;
   int code = system(full.c_str());
   return code == 0;
+}
+
+std::string PowerShellPath(const std::wstring& path) {
+  std::string value = WideToUtf8(path);
+  size_t pos = 0;
+  while ((pos = value.find('\'', pos)) != std::string::npos) {
+    value.insert(pos, "'");
+    pos += 2;
+  }
+  return "'" + value + "'";
+}
+
+void SnapshotDnsState() {
+  std::ofstream file(StatePath(L"initial-dns-client.json"));
+  file << RunCommandCapture(
+      "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+      "\"Get-DnsClientServerAddress -AddressFamily IPv4 | ConvertTo-Json "
+      "-Compress\"");
+}
+
+std::string ActiveDnsInterfaceAlias() {
+  std::string output = RunCommandCapture(
+      "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+      "\"Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' | "
+      "Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 "
+      "-ExpandProperty InterfaceAlias\"");
+  std::istringstream stream(output);
+  std::string line;
+  while (std::getline(stream, line)) {
+    line = Trim(line);
+    if (!line.empty()) {
+      return line;
+    }
+  }
+  return "";
+}
+
+bool SetDnsToCpe(const std::string& cpe, std::string* error) {
+  const std::string alias = ActiveDnsInterfaceAlias();
+  if (alias.empty()) {
+    if (error != nullptr) {
+      *error = "failed to resolve active DNS interface";
+    }
+    return false;
+  }
+  std::ostringstream command;
+  command << "netsh interface ip set dnsserver name=\"" << alias << "\" static "
+          << cpe << " primary validate=no >NUL";
+  if (!RunCommand(command.str())) {
+    if (error != nullptr) {
+      *error = "failed to set DNS to CPE";
+    }
+    return false;
+  }
+  RunCommand("ipconfig /flushdns >NUL 2>NUL");
+  return true;
+}
+
+void RestoreDnsState() {
+  const std::wstring snapshot_path = StatePath(L"initial-dns-client.json");
+  if (GetFileAttributesW(snapshot_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return;
+  }
+  const std::string path = PowerShellPath(snapshot_path);
+  RunCommand(
+      "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+      "\"$p=" +
+      path +
+      "; if (Test-Path $p) { $items=@(Get-Content -Raw -Path $p | "
+      "ConvertFrom-Json); foreach ($item in $items) { if ($null -eq "
+      "$item.InterfaceAlias) { continue }; $servers=@($item.ServerAddresses); "
+      "if ($servers.Count -eq 0) { Set-DnsClientServerAddress "
+      "-InterfaceAlias $item.InterfaceAlias -ResetServerAddresses } else { "
+      "Set-DnsClientServerAddress -InterfaceAlias $item.InterfaceAlias "
+      "-ServerAddresses $servers } }; Clear-DnsClientCache }\" >NUL 2>NUL");
+  DeleteFileW(snapshot_path.c_str());
 }
 
 void LogEvent(const std::string& message) {
@@ -548,7 +625,8 @@ void StartHealthThreadLocked() {
   g_runtime.health_thread = std::thread(HealthLoop);
 }
 
-bool StartAcceleration(const std::string& cpe, std::string* response) {
+bool StartAcceleration(const std::string& cpe, bool sync_dns,
+                       std::string* response) {
   std::thread previous_thread;
   bool already_running = false;
   {
@@ -573,13 +651,29 @@ bool StartAcceleration(const std::string& cpe, std::string* response) {
     g_runtime.cpe = cpe;
     g_runtime.last_error.clear();
     g_runtime.health_failures = 0;
+    g_runtime.dns_synced = false;
     ResetTrafficBaselineLocked(&g_runtime);
   }
 
   SnapshotInitialState();
+  if (sync_dns) {
+    SnapshotDnsState();
+    std::string dns_error;
+    if (!SetDnsToCpe(cpe, &dns_error)) {
+      RestoreDnsState();
+      std::lock_guard<std::mutex> lock(g_runtime.mutex);
+      g_runtime.state = RuntimeState::failed;
+      g_runtime.last_error = dns_error;
+      *response = StatusText(cpe);
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    g_runtime.dns_synced = true;
+  }
   PreferIpv4PrefixPolicy();
   std::string route_error;
   if (!ConfigureHalfRoutes(cpe, &route_error)) {
+    RestoreDnsState();
     RestoreIpv6PrefixPolicy();
     std::lock_guard<std::mutex> lock(g_runtime.mutex);
     g_runtime.state = RuntimeState::failed;
@@ -612,6 +706,7 @@ void StopAcceleration(const std::string& message, bool recovered) {
     g_runtime.health_thread.join();
   }
   DeleteHalfRoutes();
+  RestoreDnsState();
   RestoreIpv6PrefixPolicy();
   {
     std::lock_guard<std::mutex> lock(g_runtime.mutex);
@@ -621,6 +716,7 @@ void StopAcceleration(const std::string& message, bool recovered) {
     g_runtime.last_error = recovered ? "已回切直连" : "";
     g_runtime.stop_requested = false;
     g_runtime.health_failures = 0;
+    g_runtime.dns_synced = false;
   }
   LogEvent(message.empty() ? "关闭半路由" : message);
 }
@@ -884,6 +980,22 @@ int LimitFromArgs(const std::vector<std::string>& args, int fallback) {
   return fallback;
 }
 
+bool BoolFromArgs(const std::vector<std::string>& args,
+                  const std::string& name) {
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (args[i] != name) {
+      continue;
+    }
+    if (i + 1 >= args.size()) {
+      return true;
+    }
+    const std::string value = ToLowerAscii(args[i + 1]);
+    return value == "true" || value == "1" || value == "yes" ||
+           value == "on";
+  }
+  return false;
+}
+
 std::string SelfTestText() {
   std::ostringstream out;
   for (const std::string& command : BuildRouteAddCommands(kDefaultCpe)) {
@@ -896,6 +1008,10 @@ std::string SelfTestText() {
   out << "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\n";
   out << "netstat -ano -p tcp\n";
   out << "ipconfig /displaydns\n";
+  out << "--sync-dns true\n";
+  out << "Get-DnsClientServerAddress -AddressFamily IPv4\n";
+  out << "Set-DnsClientServerAddress\n";
+  out << "netsh interface ip set dnsserver\n";
   out << "netsh interface ipv6 show prefixpolicies\n";
   out << "netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 60 4\n";
   out << "GetIfTable2\n";
@@ -911,9 +1027,10 @@ std::string CommandResponse(const std::vector<std::string>& args) {
   }
   const std::string command = args[0];
   const std::string cpe = CpeFromArgs(args);
+  const bool sync_dns = BoolFromArgs(args, "--sync-dns");
   if (command == "start") {
     std::string response;
-    StartAcceleration(cpe, &response);
+    StartAcceleration(cpe, sync_dns, &response);
     return response;
   }
   if (command == "stop" || command == "rollback") {
@@ -1233,7 +1350,7 @@ std::string JoinArgs(const std::vector<std::string>& args) {
 }
 
 void PrintUsage() {
-  printf("sdwan_windows_helper {install|uninstall|service|start|stop|status|health|logs|connections|self-test} [--cpe ip] [--limit n]\n");
+  printf("sdwan_windows_helper {install|uninstall|service|start|stop|status|health|logs|connections|self-test} [--cpe ip] [--sync-dns true] [--limit n]\n");
 }
 }  // namespace
 

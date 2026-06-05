@@ -74,6 +74,19 @@ void main() {
     expect(helper, contains('|domain=" << domain'));
   });
 
+  test('Windows helper can temporarily point DNS to CPE and restore it', () {
+    final helper = readHelper();
+
+    expect(helper, contains('SnapshotDnsState'));
+    expect(helper, contains('SetDnsToCpe'));
+    expect(helper, contains('RestoreDnsState'));
+    expect(helper, contains('Get-DnsClientServerAddress -AddressFamily IPv4'));
+    expect(helper, contains('Set-DnsClientServerAddress'));
+    expect(helper, contains('netsh interface ip set dnsserver'));
+    expect(helper, contains('--sync-dns'));
+    expect(helper, contains('StartAcceleration(cpe, sync_dns'));
+  });
+
   test('Windows helper keeps SDK headers in a warning-clean order', () {
     final helper = readHelper();
 

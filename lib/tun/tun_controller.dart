@@ -91,6 +91,10 @@ class TunController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setSyncDnsWithAcceleration(bool enabled) {
+    _service.updateDnsSync(enabled);
+  }
+
   Future<void> setRetainTrafficHistory(bool retain) async {
     _retainTrafficHistory = retain;
     _trafficHistoryPrepared = true;

@@ -68,7 +68,10 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'healthCheck');
-          expect(call.arguments, {'cpeHost': '192.168.1.150'});
+          expect(call.arguments, {
+            'cpeHost': '192.168.1.150',
+            'syncDns': false,
+          });
           return {
             'host': '192.168.1.150',
             'reachable': true,
@@ -82,6 +85,30 @@ void main() {
 
     expect(health.host, '192.168.1.150');
     expect(health.reachable, isTrue);
+  });
+
+  test('passes DNS sync preference to native start call', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          expect(call.method, 'start');
+          expect(call.arguments, {'cpeHost': '192.168.1.140', 'syncDns': true});
+          return {
+            'state': 'running',
+            'permission': 'ready',
+            'helperInstalled': true,
+            'cpe': {
+              'host': '192.168.1.140',
+              'reachable': true,
+              'serviceReady': true,
+            },
+          };
+        });
+    final service = MethodChannelTunService(channel: channel);
+
+    service.updateDnsSync(true);
+    final status = await service.start();
+
+    expect(status.state, TunState.running);
   });
 
   test('treats stale auto recovery as stopped when CPE is healthy', () async {
@@ -113,7 +140,11 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'connections');
-          expect(call.arguments, {'limit': 1, 'cpeHost': '192.168.1.140'});
+          expect(call.arguments, {
+            'limit': 1,
+            'cpeHost': '192.168.1.140',
+            'syncDns': false,
+          });
           return [
             {
               'lastSeen': '1717473607',
@@ -219,7 +250,11 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'logs');
-          expect(call.arguments, {'limit': 2, 'cpeHost': '192.168.1.140'});
+          expect(call.arguments, {
+            'limit': 2,
+            'cpeHost': '192.168.1.140',
+            'syncDns': false,
+          });
           return [
             {'time': '2026-06-04 12:00:00', 'message': '开启半路由'},
             {'time': '', 'message': ''},
@@ -243,13 +278,17 @@ void main() {
         .setMockMethodCallHandler(channel, (call) async {
           calls.add(call.method);
           if (call.method == 'launchAtLoginStatus') {
-            expect(call.arguments, {'cpeHost': '192.168.1.140'});
+            expect(call.arguments, {
+              'cpeHost': '192.168.1.140',
+              'syncDns': false,
+            });
             return true;
           }
           if (call.method == 'setLaunchAtLogin') {
             expect(call.arguments, {
               'enabled': false,
               'cpeHost': '192.168.1.140',
+              'syncDns': false,
             });
             return false;
           }
@@ -274,6 +313,7 @@ void main() {
               'url': 'http://cp.cloudflare.com/generate_204',
               'timeoutMs': 5000,
               'cpeHost': '192.168.1.140',
+              'syncDns': false,
             });
             return {
               'status': 'success',

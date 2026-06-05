@@ -20,6 +20,7 @@ namespace {
 constexpr char kTunChannelName[] = "sdwan_client/tun";
 constexpr char kDefaultCpeHost[] = "192.168.1.140";
 std::string g_last_cpe_host = kDefaultCpeHost;
+bool g_last_sync_dns = false;
 
 std::string CpeHostFromArgs(const flutter::EncodableValue* args) {
   if (!args) {
@@ -340,10 +341,13 @@ flutter::EncodableValue ConnectionsFromText(const std::string& text) {
 }
 
 std::wstring HelperArgs(const std::wstring& method, const std::string& host,
-                        int limit = 0) {
+                        int limit = 0, bool sync_dns = false) {
   std::wstring args = method;
   if (!host.empty()) {
     args += L" --cpe " + Utf8ToWide(host);
+  }
+  if (sync_dns) {
+    args += L" --sync-dns true";
   }
   if (limit > 0) {
     args += L" --limit " + std::to_wstring(limit);
@@ -441,7 +445,7 @@ void ToggleAccelerationFromTray() {
   if (IsAccelerationRunning()) {
     RunHelper(HelperArgs(L"stop", g_last_cpe_host));
   } else {
-    RunHelper(HelperArgs(L"start", g_last_cpe_host));
+    RunHelper(HelperArgs(L"start", g_last_cpe_host, 0, g_last_sync_dns));
   }
 }
 
@@ -486,7 +490,9 @@ bool FlutterWindow::OnCreate() {
   tun_channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const std::string& method = call.method_name();
     const std::string host = CpeHostFromArgs(call.arguments());
+    const bool sync_dns = BoolArg(call.arguments(), "syncDns", false);
     g_last_cpe_host = host;
+    g_last_sync_dns = sync_dns;
     if (method == "status") {
       const auto status =
           StatusFromText(RunHelper(HelperArgs(L"status", host)), host);
@@ -519,7 +525,8 @@ bool FlutterWindow::OnCreate() {
       result->Success(StatusFromText(text, host));
     } else if (method == "start") {
       const auto status =
-          StatusFromText(RunHelper(HelperArgs(L"start", host)), host);
+          StatusFromText(RunHelper(HelperArgs(L"start", host, 0, sync_dns)),
+                         host);
       RefreshTrayIcon();
       result->Success(status);
     } else if (method == "stop") {
