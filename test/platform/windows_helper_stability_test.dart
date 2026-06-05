@@ -47,6 +47,25 @@ void main() {
     );
   });
 
+  test('Windows service pipe is accessible from the desktop app', () {
+    final helper = readHelper();
+
+    expect(
+      helper,
+      contains('ConvertStringSecurityDescriptorToSecurityDescriptorW'),
+    );
+    expect(helper, contains('A;;GA;;;IU'));
+    expect(helper, contains('CreateNamedPipeW'));
+  });
+
+  test('Windows install refreshes existing service and waits for pipe readiness', () {
+    final helper = readHelper();
+
+    expect(helper, contains('StopServiceIfRunning'));
+    expect(helper, contains('StartServiceAndWait'));
+    expect(helper, contains('WaitForPipeReady'));
+  });
+
   test('Windows health rollback is based on CPE reachability', () {
     final helper = readHelper();
 

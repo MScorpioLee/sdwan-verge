@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <icmpapi.h>
+#include <sddl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -761,6 +762,30 @@ std::string SendPipeCommand(const std::string& command) {
   return output;
 }
 
+bool WaitForPipeReady(int attempts, DWORD wait_ms) {
+  for (int i = 0; i < attempts; ++i) {
+    if (WaitNamedPipeW(kPipeName, wait_ms)) {
+      return true;
+    }
+    Sleep(200);
+  }
+  return false;
+}
+
+SECURITY_ATTRIBUTES PipeSecurityAttributes(PSECURITY_DESCRIPTOR* descriptor) {
+  SECURITY_ATTRIBUTES attributes = {};
+  attributes.nLength = sizeof(attributes);
+  attributes.bInheritHandle = FALSE;
+  attributes.lpSecurityDescriptor = nullptr;
+  *descriptor = nullptr;
+  if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;BU)",
+          SDDL_REVISION_1, descriptor, nullptr)) {
+    attributes.lpSecurityDescriptor = *descriptor;
+  }
+  return attributes;
+}
+
 void SetServiceStatus(DWORD state, DWORD exit_code = NO_ERROR,
                       DWORD wait_hint = 0) {
   if (g_service_status_handle == nullptr) {
@@ -823,10 +848,17 @@ void WINAPI ServiceMain(DWORD, wchar_t**) {
   SetServiceStatus(SERVICE_RUNNING);
 
   while (!g_service_stopping) {
+    PSECURITY_DESCRIPTOR pipe_descriptor = nullptr;
+    SECURITY_ATTRIBUTES pipe_security =
+        PipeSecurityAttributes(&pipe_descriptor);
     HANDLE pipe = CreateNamedPipeW(
         kPipeName, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE |
                                            PIPE_WAIT,
-        PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, nullptr);
+        PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0,
+        pipe_descriptor != nullptr ? &pipe_security : nullptr);
+    if (pipe_descriptor != nullptr) {
+      LocalFree(pipe_descriptor);
+    }
     if (pipe == INVALID_HANDLE_VALUE) {
       break;
     }
@@ -849,9 +881,56 @@ void WINAPI ServiceMain(DWORD, wchar_t**) {
   SetServiceStatus(SERVICE_STOPPED);
 }
 
+DWORD QueryServiceState(SC_HANDLE service) {
+  SERVICE_STATUS_PROCESS status = {};
+  DWORD bytes_needed = 0;
+  if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                            reinterpret_cast<LPBYTE>(&status),
+                            sizeof(status), &bytes_needed)) {
+    return SERVICE_STOPPED;
+  }
+  return status.dwCurrentState;
+}
+
+bool StopServiceIfRunning(SC_HANDLE service) {
+  DWORD state = QueryServiceState(service);
+  if (state == SERVICE_STOPPED) {
+    return true;
+  }
+  SERVICE_STATUS status = {};
+  ControlService(service, SERVICE_CONTROL_STOP, &status);
+  for (int i = 0; i < 50; ++i) {
+    state = QueryServiceState(service);
+    if (state == SERVICE_STOPPED) {
+      return true;
+    }
+    Sleep(200);
+  }
+  return QueryServiceState(service) == SERVICE_STOPPED;
+}
+
+bool StartServiceAndWait(SC_HANDLE service) {
+  if (!StartServiceW(service, 0, nullptr) &&
+      GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
+    return false;
+  }
+  for (int i = 0; i < 50; ++i) {
+    const DWORD state = QueryServiceState(service);
+    if (state == SERVICE_RUNNING) {
+      return true;
+    }
+    if (state == SERVICE_STOPPED) {
+      break;
+    }
+    Sleep(200);
+  }
+  return QueryServiceState(service) == SERVICE_RUNNING;
+}
+
 bool InstallService() {
   SC_HANDLE manager =
-      OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
+      OpenSCManagerW(nullptr, nullptr,
+                     SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
   if (manager == nullptr) {
     return false;
   }
@@ -863,6 +942,7 @@ bool InstallService() {
   if (service == nullptr && GetLastError() == ERROR_SERVICE_EXISTS) {
     service = OpenServiceW(manager, kServiceName, SERVICE_ALL_ACCESS);
     if (service != nullptr) {
+      StopServiceIfRunning(service);
       ChangeServiceConfigW(service, SERVICE_NO_CHANGE, SERVICE_AUTO_START,
                            SERVICE_NO_CHANGE, binary.c_str(), nullptr, nullptr,
                            nullptr, nullptr, nullptr, nullptr);
@@ -876,11 +956,11 @@ bool InstallService() {
   description.lpDescription = const_cast<wchar_t*>(
       L"Privileged SD-WAN Verge helper for half-route routing and cleanup.");
   ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &description);
-  StartServiceW(service, 0, nullptr);
+  const bool running = StartServiceAndWait(service);
   CloseServiceHandle(service);
   CloseServiceHandle(manager);
   LogEvent("Windows helper installed");
-  return true;
+  return running;
 }
 
 bool StopAndDeleteService() {
@@ -956,7 +1036,7 @@ int wmain(int argc, wchar_t* argv[]) {
              kAdapterName);
       return 1;
     }
-    Sleep(500);
+    WaitForPipeReady(30, 1000);
     printf("%s", SendPipeCommand("status").c_str());
     return 0;
   }
