@@ -13,6 +13,15 @@ void main() {
     expect(runner, contains('return TRUE'));
   });
 
+  test('Linux runner uses one app instance and reuses the existing window', () {
+    final runner = read('linux/runner/my_application.cc');
+
+    expect(runner, isNot(contains('G_APPLICATION_NON_UNIQUE')));
+    expect(runner, contains('g_application_get_is_remote'));
+    expect(runner, contains('if (self->window != nullptr)'));
+    expect(runner, contains('show_main_window(self);'));
+  });
+
   test('Linux tray exposes restore toggle acceleration and quit', () {
     final runner = read('linux/runner/my_application.cc');
 

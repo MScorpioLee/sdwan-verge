@@ -19,6 +19,8 @@ namespace {
 #endif
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
+constexpr const wchar_t kShowMainWindowMessageName[] =
+    L"com.sdwan.verge.show-main-window";
 constexpr const wchar_t kTrayTooltip[] = L"SD-WAN Verge";
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kTrayIconId = 1;
@@ -55,6 +57,11 @@ HICON LoadAppIcon(int width, int height) {
 
 UINT TaskbarCreatedMessage() {
   static const UINT message = RegisterWindowMessage(L"TaskbarCreated");
+  return message;
+}
+
+UINT ShowMainWindowMessage() {
+  static const UINT message = RegisterWindowMessage(kShowMainWindowMessageName);
   return message;
 }
 
@@ -217,6 +224,10 @@ Win32Window::MessageHandler(HWND hwnd,
   if (message == TaskbarCreatedMessage() && tray_icon_visible_) {
     tray_icon_visible_ = false;
     AddOrUpdateTrayIcon();
+    return 0;
+  }
+  if (message == ShowMainWindowMessage()) {
+    RestoreFromTray();
     return 0;
   }
 

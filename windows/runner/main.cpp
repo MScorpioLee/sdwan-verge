@@ -5,8 +5,31 @@
 #include "flutter_window.h"
 #include "utils.h"
 
+namespace {
+
+constexpr const wchar_t kSingleInstanceMutexName[] =
+    L"Local\\SDWANVergeSingleInstance";
+constexpr const wchar_t kShowMainWindowMessageName[] =
+    L"com.sdwan.verge.show-main-window";
+
+UINT ShowMainWindowMessage() {
+  static const UINT message = RegisterWindowMessage(kShowMainWindowMessageName);
+  return message;
+}
+
+}  // namespace
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  HANDLE single_instance_mutex =
+      CreateMutexW(nullptr, TRUE, kSingleInstanceMutexName);
+  if (single_instance_mutex != nullptr &&
+      GetLastError() == ERROR_ALREADY_EXISTS) {
+    PostMessage(HWND_BROADCAST, ShowMainWindowMessage(), 0, 0);
+    CloseHandle(single_instance_mutex);
+    return EXIT_SUCCESS;
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
@@ -40,5 +63,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  if (single_instance_mutex != nullptr) {
+    CloseHandle(single_instance_mutex);
+  }
   return EXIT_SUCCESS;
 }

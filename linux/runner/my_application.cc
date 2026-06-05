@@ -705,6 +705,11 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
+  if (self->window != nullptr) {
+    show_main_window(self);
+    return;
+  }
+
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
   self->window = GTK_WIDGET(window);
@@ -776,6 +781,12 @@ static gboolean my_application_local_command_line(GApplication* application,
     return TRUE;
   }
 
+  if (g_application_get_is_remote(application)) {
+    g_application_activate(application);
+    *exit_status = 0;
+    return TRUE;
+  }
+
   g_application_activate(application);
   *exit_status = 0;
 
@@ -833,5 +844,5 @@ MyApplication* my_application_new() {
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_NON_UNIQUE, nullptr));
+                                     static_cast<GApplicationFlags>(0), nullptr));
 }

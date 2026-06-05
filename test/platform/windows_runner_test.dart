@@ -11,6 +11,21 @@ void main() {
     expect(mainCpp, contains('window.SetQuitOnClose(false);'));
   });
 
+  test('Windows runner restores the existing instance on second launch', () {
+    final mainCpp = read('windows/runner/main.cpp');
+    final win32Window = read('windows/runner/win32_window.cpp');
+
+    expect(mainCpp, contains('kSingleInstanceMutexName'));
+    expect(mainCpp, contains('CreateMutexW'));
+    expect(mainCpp, contains('ERROR_ALREADY_EXISTS'));
+    expect(
+      mainCpp,
+      contains('PostMessage(HWND_BROADCAST, ShowMainWindowMessage(), 0, 0)'),
+    );
+    expect(win32Window, contains('ShowMainWindowMessage'));
+    expect(win32Window, contains('RestoreFromTray();'));
+  });
+
   test('Windows runner explicitly applies app icons to the window', () {
     final win32Window = read('windows/runner/win32_window.cpp');
 
@@ -50,13 +65,19 @@ void main() {
     expect(cmake, contains('/utf-8'));
   });
 
-  test('Windows runner stops acceleration before tray exit and destroy fallback', () {
-    final win32Window = read('windows/runner/win32_window.cpp');
-    final flutterWindow = read('windows/runner/flutter_window.cpp');
+  test(
+    'Windows runner stops acceleration before tray exit and destroy fallback',
+    () {
+      final win32Window = read('windows/runner/win32_window.cpp');
+      final flutterWindow = read('windows/runner/flutter_window.cpp');
 
-    expect(win32Window, contains('RunExitHandler'));
-    expect(win32Window, contains('tray_exit_handler_'));
-    expect(flutterWindow, contains('StopAccelerationBeforeExit'));
-    expect(flutterWindow, contains('RunHelper(HelperArgs(L"stop", g_last_cpe_host))'));
-  });
+      expect(win32Window, contains('RunExitHandler'));
+      expect(win32Window, contains('tray_exit_handler_'));
+      expect(flutterWindow, contains('StopAccelerationBeforeExit'));
+      expect(
+        flutterWindow,
+        contains('RunHelper(HelperArgs(L"stop", g_last_cpe_host))'),
+      );
+    },
+  );
 }
