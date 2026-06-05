@@ -819,7 +819,9 @@ static bool nat_translate_incoming(NatTable *table, uint8_t *packet, size_t len,
     return false;
   }
   uint32_t remote_ip = read_u32(packet + 12);
-  NatEntry *entry = nat_lookup_return(table, proto, remote_ip, dst_port, src_port);
+  uint16_t local_port = proto == IPPROTO_ICMP ? src_port : dst_port;
+  uint16_t remote_port = proto == IPPROTO_ICMP ? dst_port : src_port;
+  NatEntry *entry = nat_lookup_return(table, proto, remote_ip, local_port, remote_port);
   if (entry == NULL) {
     return false;
   }
@@ -1836,6 +1838,24 @@ static void make_udp_packet(uint8_t *packet, size_t *len, uint32_t src, uint32_t
   *len = 28;
 }
 
+static void make_icmp_packet(uint8_t *packet, size_t *len, uint32_t src, uint32_t dst,
+                             uint8_t type, uint16_t identifier, uint16_t sequence) {
+  memset(packet, 0, 28);
+  packet[0] = 0x45;
+  packet[8] = 64;
+  packet[9] = IPPROTO_ICMP;
+  write_u16(packet + 2, 28);
+  write_u32(packet + 12, src);
+  write_u32(packet + 16, dst);
+  packet[20] = type;
+  packet[21] = 0;
+  write_u16(packet + 24, identifier);
+  write_u16(packet + 26, sequence);
+  fix_ipv4_checksum(packet, 28);
+  fix_transport_checksum(packet, 28);
+  *len = 28;
+}
+
 static void append_udp_payload(uint8_t *packet, size_t *len, const uint8_t *payload,
                                size_t payload_len) {
   memcpy(packet + 28, payload, payload_len);
@@ -1896,6 +1916,22 @@ static int command_self_test(void) {
   }
   if (read_u16(reply + 22) != 12345) {
     fprintf(stderr, "destination port restore failed\n");
+    return 1;
+  }
+  NatTable icmp_table;
+  memset(&icmp_table, 0, sizeof(icmp_table));
+  make_icmp_packet(packet, &len, tun_ip, remote_ip, 8, 0x1234, 1);
+  if (!nat_translate_outgoing(&icmp_table, packet, len, physical_ip, cpe_ip)) {
+    fprintf(stderr, "icmp nat outgoing failed\n");
+    return 1;
+  }
+  uint16_t translated_icmp_id = read_u16(packet + 24);
+  make_icmp_packet(reply, &len, remote_ip, physical_ip, 0, translated_icmp_id, 1);
+  if (!nat_translate_incoming(&icmp_table, reply, len, physical_ip) ||
+      read_u32(reply + 16) != tun_ip ||
+      read_u32(reply + 12) != remote_ip ||
+      read_u16(reply + 24) != 0x1234) {
+    fprintf(stderr, "icmp nat restore failed\n");
     return 1;
   }
   uint8_t tcp_syn[64];

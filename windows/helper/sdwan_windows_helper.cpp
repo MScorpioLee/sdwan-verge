@@ -764,7 +764,9 @@ bool NatTranslateIncoming(NatTable* table, uint8_t* packet, size_t len, uint32_t
     return false;
   }
   const uint32_t remote_ip = ReadU32(packet + 12);
-  NatEntry* entry = NatLookupReturn(table, proto, remote_ip, dst_port, src_port);
+  const uint16_t local_port = proto == IPPROTO_ICMP ? src_port : dst_port;
+  const uint16_t remote_port = proto == IPPROTO_ICMP ? dst_port : src_port;
+  NatEntry* entry = NatLookupReturn(table, proto, remote_ip, local_port, remote_port);
   if (entry == nullptr) {
     return false;
   }
@@ -794,6 +796,24 @@ void MakeUdpPacket(uint8_t* packet, size_t* len, uint32_t src_ip, uint32_t dst_i
   WriteU16(packet + 20, src_port);
   WriteU16(packet + 22, dst_port);
   WriteU16(packet + 24, 8);
+  *len = 28;
+  FixIpv4Checksum(packet, *len);
+  FixTransportChecksum(packet, *len);
+}
+
+void MakeIcmpPacket(uint8_t* packet, size_t* len, uint32_t src_ip, uint32_t dst_ip,
+                    uint8_t type, uint16_t identifier, uint16_t sequence) {
+  memset(packet, 0, 64);
+  packet[0] = 0x45;
+  packet[8] = 64;
+  packet[9] = IPPROTO_ICMP;
+  WriteU16(packet + 2, 28);
+  WriteU32(packet + 12, src_ip);
+  WriteU32(packet + 16, dst_ip);
+  packet[20] = type;
+  packet[21] = 0;
+  WriteU16(packet + 24, identifier);
+  WriteU16(packet + 26, sequence);
   *len = 28;
   FixIpv4Checksum(packet, *len);
   FixTransportChecksum(packet, *len);
@@ -939,7 +959,8 @@ std::string BuildReturnFilter(const std::string& physical_ip) {
          " and ((tcp and tcp.DstPort >= " + std::to_string(kNatPortStart) +
          " and tcp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
          "(udp and udp.DstPort >= " + std::to_string(kNatPortStart) +
-         " and udp.DstPort <= " + std::to_string(kNatPortEnd) + "))";
+         " and udp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
+         "(icmp and icmp.Type == 0))";
 }
 
 bool ValidateWinDivertFilter(WinDivertApi* api, const std::string& filter, std::string* error) {
@@ -1757,6 +1778,21 @@ int CommandSelfTest() {
       ReadU16(reply + 22) != 12345) {
     WSACleanup();
     return SelfTestFail(13, "nat inbound restore failed");
+  }
+  auto icmp_table = std::make_unique<NatTable>();
+  MakeIcmpPacket(packet, &len, tun_ip, remote_ip, 8, 0x1234, 1);
+  if (!NatTranslateOutgoing(icmp_table.get(), packet, len, physical_ip, cpe_ip)) {
+    WSACleanup();
+    return SelfTestFail(22, "icmp nat outgoing failed");
+  }
+  const uint16_t translated_icmp_id = ReadU16(packet + 24);
+  MakeIcmpPacket(reply, &len, remote_ip, physical_ip, 0, translated_icmp_id, 1);
+  if (!NatTranslateIncoming(icmp_table.get(), reply, len, physical_ip) ||
+      ReadU32(reply + 16) != tun_ip ||
+      ReadU32(reply + 12) != remote_ip ||
+      ReadU16(reply + 24) != 0x1234) {
+    WSACleanup();
+    return SelfTestFail(23, "icmp nat restore failed");
   }
   uint8_t tcp_syn[64] = {};
   tcp_syn[0] = 0x45;

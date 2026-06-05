@@ -23,4 +23,17 @@ void main() {
     expect(helper, contains('if (!l1)'));
     expect(helper, contains('CPE reachable but L3 probe failed'));
   });
+
+  test('Windows return filter and NAT include ICMP echo replies', () {
+    final helper = readHelper();
+
+    expect(helper, contains('icmp and icmp.Type == 0'));
+    expect(
+      helper,
+      contains(
+        'const uint16_t local_port = proto == IPPROTO_ICMP ? src_port : dst_port;',
+      ),
+    );
+    expect(helper, contains('icmp nat restore failed'));
+  });
 }

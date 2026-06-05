@@ -147,6 +147,19 @@ class TunController extends ChangeNotifier {
       _status = _status.copyWith(state: TunState.starting, lastError: null);
       notifyListeners();
 
+      _consecutiveFailures = 0;
+      if (!_status.helperInstalled) {
+        _status = await _service.installHelper();
+        if (!_status.helperInstalled) {
+          _status = _status.copyWith(
+            state: TunState.failed,
+            lastError: _status.lastError ?? '虚拟网卡助手未安装，无法开启加速',
+          );
+          _stopPolling();
+          return;
+        }
+      }
+
       final health = await _service.healthCheck();
       if (!health.reachable) {
         _consecutiveFailures = failureThreshold;
@@ -159,19 +172,6 @@ class TunController extends ChangeNotifier {
         return;
       }
 
-      _consecutiveFailures = 0;
-      if (!_status.helperInstalled) {
-        _status = await _service.installHelper();
-        if (!_status.helperInstalled) {
-          _status = _status.copyWith(
-            state: TunState.failed,
-            cpe: health,
-            lastError: _status.lastError ?? '虚拟网卡助手未安装，无法开启加速',
-          );
-          _stopPolling();
-          return;
-        }
-      }
       final started = await _service.start().timeout(
         startTimeout,
         onTimeout: () => TunStatus.defaults(cpeHost: health.host).copyWith(

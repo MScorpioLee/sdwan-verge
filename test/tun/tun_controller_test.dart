@@ -219,12 +219,31 @@ void main() {
 
       expect(service.calls, [
         'status',
-        'healthCheck',
         'installHelper',
+        'healthCheck',
         'start',
         'status',
       ]);
       expect(controller.status.state, TunState.running);
+    },
+  );
+
+  test(
+    'start installs helper before health check when helper is missing',
+    () async {
+      final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          permission: TunPermission.needsHelperInstall,
+          helperInstalled: false,
+        ),
+        health: const CpeHealth(host: '192.168.1.140', reachable: false),
+      );
+      final controller = TunController(service: service);
+
+      await controller.initialize();
+      await controller.start();
+
+      expect(service.calls.take(3), ['status', 'installHelper', 'healthCheck']);
     },
   );
 
@@ -258,7 +277,7 @@ void main() {
       await controller.initialize();
       await controller.start();
 
-      expect(service.calls, ['status', 'healthCheck']);
+      expect(service.calls, ['status', 'installHelper', 'healthCheck']);
       expect(controller.status.state, TunState.failed);
       expect(controller.status.lastError, contains('CPE'));
     },
