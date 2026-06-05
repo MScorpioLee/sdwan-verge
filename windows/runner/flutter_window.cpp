@@ -122,7 +122,7 @@ std::string RunHelper(const std::wstring& arguments) {
   CloseHandle(write_pipe);
   if (!ok) {
     CloseHandle(read_pipe);
-    return "state=stopped\nadapterName=Windows Wintun\n"
+    return "state=stopped\nadapterName=Windows Half Route\n"
            "permission=needsHelperInstall\nhelperInstalled=false\n"
            "lastError=helper executable not found or service unavailable\n";
   }
@@ -243,7 +243,7 @@ flutter::EncodableValue StatusFromText(const std::string& text,
        flutter::EncodableValue(StringValue(values, "state", "stopped"))},
       {flutter::EncodableValue("adapterName"),
        flutter::EncodableValue(StringValue(values, "adapterName",
-                                           "Windows Wintun"))},
+                                           "Windows Half Route"))},
       {flutter::EncodableValue("permission"),
        flutter::EncodableValue(StringValue(values, "permission",
                                            "needsHelperInstall"))},
@@ -506,14 +506,14 @@ bool FlutterWindow::OnCreate() {
     } else if (method == "installHelper") {
       const bool ok = RunHelperElevated(L"install");
       const std::string text = ok ? RunHelper(HelperArgs(L"status", host))
-                                  : "state=failed\nadapterName=Windows Wintun\n"
+                                  : "state=failed\nadapterName=Windows Half Route\n"
                                     "permission=denied\nhelperInstalled=false\n"
                                     "lastError=helper install was cancelled\n";
       result->Success(StatusFromText(text, host));
     } else if (method == "uninstallHelper") {
       const bool ok = RunHelperElevated(L"uninstall");
       const std::string text = ok ? RunHelper(HelperArgs(L"status", host))
-                                  : "state=failed\nadapterName=Windows Wintun\n"
+                                  : "state=failed\nadapterName=Windows Half Route\n"
                                     "permission=denied\nhelperInstalled=true\n"
                                     "lastError=helper uninstall was cancelled\n";
       result->Success(StatusFromText(text, host));

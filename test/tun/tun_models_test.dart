@@ -6,7 +6,7 @@ void main() {
     final status = TunStatus.defaults();
 
     expect(status.mode, TunMode.tun);
-    expect(status.adapterName, 'TUN 虚拟网卡');
+    expect(status.adapterName, '半路由');
     expect(status.state, TunState.stopped);
     expect(status.permission, TunPermission.needsVpnConsent);
     expect(status.cpe.host, '192.168.1.140');
@@ -68,10 +68,10 @@ void main() {
   test('copyWith can override adapter label', () {
     final status = TunStatus.defaults();
 
-    final updated = status.copyWith(adapterName: 'Windows Wintun');
+    final updated = status.copyWith(adapterName: 'Windows Half Route');
 
-    expect(updated.adapterName, 'Windows Wintun');
-    expect(status.adapterName, 'TUN 虚拟网卡');
+    expect(updated.adapterName, 'Windows Half Route');
+    expect(status.adapterName, '半路由');
   });
 
   test('latency results expose success timeout and failure state', () {

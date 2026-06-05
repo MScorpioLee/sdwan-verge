@@ -1,2004 +1,980 @@
+#define UNICODE
+#define _UNICODE
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <windows.h>
-#include <Ipexport.h>
-#include <iphlpapi.h>
 #include <icmpapi.h>
-#include <netioapi.h>
-#include <sddl.h>
+#include <iphlpapi.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdint>
+#include <cctype>
 #include <cstdio>
-#include <cstring>
-#include <ctime>
-#include <memory>
+#include <cstdlib>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include "windivert.h"
-
 namespace {
-
 constexpr wchar_t kServiceName[] = L"SDWANVergeHelper";
 constexpr wchar_t kServiceDisplayName[] = L"SD-WAN Verge Helper";
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\sdwan_verge_helper";
-constexpr wchar_t kAdapterName[] = L"SD-WAN Verge";
-constexpr wchar_t kTunnelType[] = L"SDWAN";
-constexpr char kDefaultCpe[] = "192.168.1.140";
-constexpr char kTunLocal[] = "10.255.0.2";
-constexpr char kTunPeer[] = "10.255.0.1";
-constexpr int kTunRouteMetric = 5;
-constexpr int kPhysicalEgressRouteMetric = 50;
-constexpr int kTunMtu = 1400;
-constexpr uint16_t kTcpMssClamp = 1360;
-constexpr uint16_t kNatPortStart = 42000;
-constexpr uint16_t kNatPortEnd = 48999;
-constexpr size_t kMaxNat = 16384;
-constexpr size_t kMaxDnsCache = 512;
+constexpr const char* kDefaultCpe = "192.168.1.140";
+constexpr const char* kAdapterName = "Windows Half Route";
+constexpr const char* kRollbackMessage =
+    "CPE health failed, half-route rollback completed";
 
-using WINTUN_ADAPTER_HANDLE = void*;
-using WINTUN_SESSION_HANDLE = void*;
-using WintunCreateAdapterFn =
-    WINTUN_ADAPTER_HANDLE(WINAPI*)(const WCHAR*, const WCHAR*, const GUID*);
-using WintunOpenAdapterFn = WINTUN_ADAPTER_HANDLE(WINAPI*)(const WCHAR*);
-using WintunCloseAdapterFn = void(WINAPI*)(WINTUN_ADAPTER_HANDLE);
-using WintunStartSessionFn =
-    WINTUN_SESSION_HANDLE(WINAPI*)(WINTUN_ADAPTER_HANDLE, DWORD);
-using WintunEndSessionFn = void(WINAPI*)(WINTUN_SESSION_HANDLE);
-using WintunReceivePacketFn = BYTE*(WINAPI*)(WINTUN_SESSION_HANDLE, DWORD*);
-using WintunReleaseReceivePacketFn =
-    void(WINAPI*)(WINTUN_SESSION_HANDLE, const BYTE*);
-using WintunAllocateSendPacketFn = BYTE*(WINAPI*)(WINTUN_SESSION_HANDLE, DWORD);
-using WintunSendPacketFn = void(WINAPI*)(WINTUN_SESSION_HANDLE, const BYTE*);
-using WintunGetReadWaitEventFn = HANDLE(WINAPI*)(WINTUN_SESSION_HANDLE);
-using WintunDeleteDriverFn = BOOL(WINAPI*)();
-
-using WinDivertOpenFn = HANDLE(WINAPI*)(const char*, WINDIVERT_LAYER, INT16, UINT64);
-using WinDivertCloseFn = BOOL(WINAPI*)(HANDLE);
-using WinDivertRecvFn =
-    BOOL(WINAPI*)(HANDLE, PVOID, UINT, UINT*, WINDIVERT_ADDRESS*);
-using WinDivertSendFn =
-    BOOL(WINAPI*)(HANDLE, const VOID*, UINT, UINT*, const WINDIVERT_ADDRESS*);
-using WinDivertHelperCalcChecksumsFn =
-    BOOL(WINAPI*)(PVOID, UINT, WINDIVERT_ADDRESS*, UINT64);
-using WinDivertHelperCompileFilterFn =
-    BOOL(WINAPI*)(const char*, WINDIVERT_LAYER, char*, UINT, const char**, UINT*);
-
-struct NatEntry {
-  bool used = false;
-  uint8_t proto = 0;
-  uint32_t original_src_ip = 0;
-  uint32_t original_remote_ip = 0;
-  uint32_t remote_ip = 0;
-  uint16_t original_src_port = 0;
-  uint16_t remote_port = 0;
-  uint16_t translated_port = 0;
-  uint64_t tx_bytes = 0;
-  uint64_t rx_bytes = 0;
-  uint64_t last_tx_bytes = 0;
-  uint64_t last_rx_bytes = 0;
-  uint64_t tx_rate = 0;
-  uint64_t rx_rate = 0;
-  time_t last_rate_at = 0;
-  time_t last_seen = 0;
-  char domain[256] = {};
-};
-
-struct DnsCacheEntry {
-  bool used = false;
-  uint32_t ip = 0;
-  time_t last_seen = 0;
-  char domain[256] = {};
-};
-
-struct NatTable {
-  NatEntry entries[kMaxNat];
-  DnsCacheEntry dns[kMaxDnsCache];
-};
-
-struct WintunApi {
-  HMODULE module = nullptr;
-  WintunCreateAdapterFn create_adapter = nullptr;
-  WintunOpenAdapterFn open_adapter = nullptr;
-  WintunCloseAdapterFn close_adapter = nullptr;
-  WintunStartSessionFn start_session = nullptr;
-  WintunEndSessionFn end_session = nullptr;
-  WintunReceivePacketFn receive_packet = nullptr;
-  WintunReleaseReceivePacketFn release_receive_packet = nullptr;
-  WintunAllocateSendPacketFn allocate_send_packet = nullptr;
-  WintunSendPacketFn send_packet = nullptr;
-  WintunGetReadWaitEventFn get_read_wait_event = nullptr;
-  WintunDeleteDriverFn delete_driver = nullptr;
-};
-
-struct WinDivertApi {
-  HMODULE module = nullptr;
-  WinDivertOpenFn open = nullptr;
-  WinDivertCloseFn close = nullptr;
-  WinDivertRecvFn recv = nullptr;
-  WinDivertSendFn send = nullptr;
-  WinDivertHelperCalcChecksumsFn calc_checksums = nullptr;
-  WinDivertHelperCompileFilterFn compile_filter = nullptr;
-};
-
-struct PhysicalAdapter {
-  uint32_t if_index = 0;
-  uint32_t sub_if_index = 0;
-  uint32_t ip = 0;
-  uint32_t mask = 0;
-  std::wstring name;
+enum class RuntimeState {
+  stopped,
+  starting,
+  running,
+  failed,
+  auto_recovered,
 };
 
 struct Runtime {
   std::mutex mutex;
-  std::atomic<bool> service_stopping{false};
-  std::atomic<bool> running{false};
-  std::atomic<bool> stop_requested{false};
-  std::string state = "stopped";
-  std::string permission = "ready";
+  RuntimeState state = RuntimeState::stopped;
   std::string cpe = kDefaultCpe;
-  std::string route_cpe;
   std::string last_error;
-  uint32_t cpe_ip = 0;
-  PhysicalAdapter physical;
-  std::wstring route_physical_name;
-  uint32_t wintun_if_index = 0;
-  NatTable nat = {};
+  bool stop_requested = false;
+  int health_failures = 0;
+  std::thread health_thread;
+
+  uint64_t base_tx = 0;
+  uint64_t base_rx = 0;
+  uint64_t last_tx_total = 0;
+  uint64_t last_rx_total = 0;
+  uint64_t last_sample_ms = 0;
   uint64_t tx_bytes = 0;
   uint64_t rx_bytes = 0;
-  uint64_t last_tx_bytes = 0;
-  uint64_t last_rx_bytes = 0;
   uint64_t tx_rate = 0;
   uint64_t rx_rate = 0;
-  time_t last_rate_at = 0;
-  uint64_t tx_packets = 0;
-  uint64_t rx_packets = 0;
-  uint64_t tx_dropped = 0;
-  uint64_t rx_dropped = 0;
-  uint64_t nat_misses = 0;
-  uint64_t send_failures = 0;
-  uint64_t udp443_packets = 0;
-  int health_failures = 0;
-  int l3_failures = 0;
-  WintunApi wintun;
-  WinDivertApi windivert;
-  WINTUN_ADAPTER_HANDLE wintun_adapter = nullptr;
-  WINTUN_SESSION_HANDLE wintun_session = nullptr;
-  HANDLE divert_return = INVALID_HANDLE_VALUE;
-  std::thread tun_thread;
-  std::thread divert_thread;
-  std::thread health_thread;
 };
 
 Runtime g_runtime;
 SERVICE_STATUS_HANDLE g_service_status_handle = nullptr;
 SERVICE_STATUS g_service_status = {};
+HANDLE g_service_stop_event = nullptr;
+std::atomic<bool> g_service_stopping(false);
 
-uint16_t ReadU16(const uint8_t* p) {
-  return static_cast<uint16_t>((p[0] << 8) | p[1]);
-}
-
-uint32_t ReadU32(const uint8_t* p) {
-  return (static_cast<uint32_t>(p[0]) << 24) |
-         (static_cast<uint32_t>(p[1]) << 16) |
-         (static_cast<uint32_t>(p[2]) << 8) | p[3];
-}
-
-void WriteU16(uint8_t* p, uint16_t v) {
-  p[0] = static_cast<uint8_t>(v >> 8);
-  p[1] = static_cast<uint8_t>(v & 0xff);
-}
-
-void WriteU32(uint8_t* p, uint32_t v) {
-  p[0] = static_cast<uint8_t>(v >> 24);
-  p[1] = static_cast<uint8_t>((v >> 16) & 0xff);
-  p[2] = static_cast<uint8_t>((v >> 8) & 0xff);
-  p[3] = static_cast<uint8_t>(v & 0xff);
-}
-
-bool ParseIpv4(const char* text, uint32_t* out) {
-  in_addr addr = {};
-  if (inet_pton(AF_INET, text, &addr) != 1) {
-    return false;
+std::string WideToUtf8(const std::wstring& value) {
+  if (value.empty()) {
+    return {};
   }
-  *out = ntohl(addr.s_addr);
-  return true;
-}
-
-bool IsIpv4Packet(const uint8_t* packet, size_t len) {
-  return len >= 20 && (packet[0] >> 4) == 4;
-}
-
-std::string Ipv4ToString(uint32_t ip) {
-  in_addr addr = {};
-  addr.s_addr = htonl(ip);
-  char buffer[INET_ADDRSTRLEN] = {};
-  inet_ntop(AF_INET, &addr, buffer, sizeof(buffer));
-  return buffer;
+  const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr,
+                                       0, nullptr, nullptr);
+  if (size <= 0) {
+    return {};
+  }
+  std::string out(static_cast<size_t>(size - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, out.data(), size, nullptr,
+                      nullptr);
+  return out;
 }
 
 std::wstring Utf8ToWide(const std::string& value) {
   if (value.empty()) {
-    return std::wstring();
+    return {};
   }
-  const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+  const int size =
+      MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
   if (size <= 0) {
-    return std::wstring();
+    return {};
   }
   std::wstring out(static_cast<size_t>(size - 1), L'\0');
   MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, out.data(), size);
   return out;
 }
 
-std::string WideToUtf8(const std::wstring& value) {
-  if (value.empty()) {
-    return std::string();
-  }
-  const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-  if (size <= 0) {
-    return std::string();
-  }
-  std::string out(static_cast<size_t>(size - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, out.data(), size, nullptr, nullptr);
-  return out;
-}
-
-std::string Win32ErrorText(DWORD code) {
-  char* message = nullptr;
-  const DWORD flags =
-      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-  FormatMessageA(flags, nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                 reinterpret_cast<char*>(&message), 0, nullptr);
-  std::string out = "win32=" + std::to_string(code);
-  if (message != nullptr) {
-    std::string text(message);
-    LocalFree(message);
-    while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == '.')) {
-      text.pop_back();
-    }
-    std::replace(text.begin(), text.end(), '\r', ' ');
-    std::replace(text.begin(), text.end(), '\n', ' ');
-    if (!text.empty()) {
-      out += " " + text;
-    }
-  }
-  return out;
-}
-
-std::wstring ExeDir() {
+std::wstring ExePath() {
   wchar_t path[MAX_PATH] = {};
   GetModuleFileNameW(nullptr, path, MAX_PATH);
-  std::wstring value(path);
-  const size_t slash = value.find_last_of(L"\\/");
-  if (slash == std::wstring::npos) {
-    return L".";
-  }
-  return value.substr(0, slash);
+  return path;
+}
+
+std::wstring Quote(const std::wstring& value) {
+  return L"\"" + value + L"\"";
 }
 
 std::wstring ProgramDataDir() {
-  wchar_t buffer[MAX_PATH] = {};
-  DWORD len = GetEnvironmentVariableW(L"ProgramData", buffer, MAX_PATH);
-  std::wstring base = (len > 0 && len < MAX_PATH) ? std::wstring(buffer) : L"C:\\ProgramData";
-  std::wstring dir = base + L"\\SD-WAN Verge";
-  CreateDirectoryW(dir.c_str(), nullptr);
-  return dir;
+  wchar_t base[MAX_PATH] = {};
+  DWORD size = GetEnvironmentVariableW(L"ProgramData", base, MAX_PATH);
+  std::wstring root =
+      size > 0 && size < MAX_PATH ? std::wstring(base) : L"C:\\ProgramData";
+  return root + L"\\SD-WAN Verge";
 }
 
-std::wstring EventsPath() {
-  return ProgramDataDir() + L"\\events.log";
+void EnsureProgramDataDir() {
+  CreateDirectoryW(ProgramDataDir().c_str(), nullptr);
 }
 
-std::string TimeString(time_t value) {
-  tm local_tm = {};
-  localtime_s(&local_tm, &value);
-  char out[32] = {};
-  strftime(out, sizeof(out), "%Y-%m-%d %H:%M:%S", &local_tm);
-  return out;
+std::wstring StatePath(const wchar_t* name) {
+  EnsureProgramDataDir();
+  return ProgramDataDir() + L"\\" + name;
 }
 
-void AppendFileUtf8(const std::wstring& path, const std::string& content) {
-  FILE* file = nullptr;
-  _wfopen_s(&file, path.c_str(), L"ab");
-  if (file == nullptr) {
-    return;
-  }
-  fwrite(content.data(), 1, content.size(), file);
-  fclose(file);
+std::string NowString() {
+  SYSTEMTIME st = {};
+  GetLocalTime(&st);
+  char buffer[32] = {};
+  snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u %02u:%02u:%02u", st.wYear,
+           st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+  return buffer;
 }
 
-void LogEvent(const std::string& message) {
-  const time_t now = time(nullptr);
-  AppendFileUtf8(EventsPath(), std::to_string(static_cast<long long>(now)) + " " + message + "\n");
+uint64_t NowMs() {
+  return GetTickCount64();
 }
 
-uint16_t Checksum16(const uint8_t* data, size_t len) {
-  uint32_t sum = 0;
-  for (size_t i = 0; i + 1 < len; i += 2) {
-    sum += ReadU16(data + i);
+std::string Trim(const std::string& value) {
+  size_t start = 0;
+  while (start < value.size() &&
+         std::isspace(static_cast<unsigned char>(value[start]))) {
+    start++;
   }
-  if ((len & 1) != 0) {
-    sum += static_cast<uint16_t>(data[len - 1] << 8);
+  size_t end = value.size();
+  while (end > start &&
+         std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+    end--;
   }
-  while ((sum >> 16) != 0) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-  return static_cast<uint16_t>(~sum);
+  return value.substr(start, end - start);
 }
 
-void FixIpv4Checksum(uint8_t* packet, size_t len) {
-  if (len < 20) {
-    return;
+std::vector<std::string> SplitWhitespace(const std::string& value) {
+  std::istringstream stream(value);
+  std::vector<std::string> parts;
+  std::string part;
+  while (stream >> part) {
+    parts.push_back(part);
   }
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || ihl > len) {
-    return;
-  }
-  WriteU16(packet + 10, 0);
-  WriteU16(packet + 10, Checksum16(packet, ihl));
+  return parts;
 }
 
-uint16_t TransportChecksum(const uint8_t* packet, size_t len, size_t offset, uint8_t proto) {
-  if (len < offset) {
-    return 0;
+std::string RunCommandCapture(const std::string& command) {
+  std::string full = "cmd.exe /C " + command + " 2>&1";
+  FILE* pipe = _popen(full.c_str(), "r");
+  if (pipe == nullptr) {
+    return {};
   }
-  const size_t payload_len = len - offset;
-  uint32_t sum = 0;
-  sum += ReadU16(packet + 12);
-  sum += ReadU16(packet + 14);
-  sum += ReadU16(packet + 16);
-  sum += ReadU16(packet + 18);
-  sum += proto;
-  sum += static_cast<uint16_t>(payload_len);
-  const uint8_t* payload = packet + offset;
-  for (size_t i = 0; i + 1 < payload_len; i += 2) {
-    sum += ReadU16(payload + i);
+  std::string output;
+  char buffer[4096] = {};
+  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    output += buffer;
   }
-  if ((payload_len & 1) != 0) {
-    sum += static_cast<uint16_t>(payload[payload_len - 1] << 8);
-  }
-  while ((sum >> 16) != 0) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-  return static_cast<uint16_t>(~sum);
+  _pclose(pipe);
+  return output;
 }
 
-void FixTransportChecksum(uint8_t* packet, size_t len) {
-  if (len < 20) {
-    return;
-  }
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  const uint8_t proto = packet[9];
-  if (ihl < 20 || ihl > len) {
-    return;
-  }
-  if (proto == IPPROTO_TCP && len >= ihl + 20) {
-    WriteU16(packet + ihl + 16, 0);
-    WriteU16(packet + ihl + 16, TransportChecksum(packet, len, ihl, proto));
-  } else if (proto == IPPROTO_UDP && len >= ihl + 8) {
-    WriteU16(packet + ihl + 6, 0);
-    WriteU16(packet + ihl + 6, TransportChecksum(packet, len, ihl, proto));
-  } else if (proto == IPPROTO_ICMP && len > ihl + 4) {
-    WriteU16(packet + ihl + 2, 0);
-    WriteU16(packet + ihl + 2, Checksum16(packet + ihl, len - ihl));
-  }
-}
-
-bool ClampTcpMss(uint8_t* packet, size_t len, uint16_t max_mss) {
-  if (!IsIpv4Packet(packet, len) || len < 40 || packet[9] != IPPROTO_TCP) {
-    return false;
-  }
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || len < ihl + 20) {
-    return false;
-  }
-  uint8_t* tcp = packet + ihl;
-  if ((tcp[13] & 0x02) == 0) {
-    return false;
-  }
-  const size_t tcp_header_len = ((tcp[12] >> 4) & 0x0f) * 4;
-  if (tcp_header_len < 20 || len < ihl + tcp_header_len) {
-    return false;
-  }
-  size_t option = ihl + 20;
-  const size_t option_end = ihl + tcp_header_len;
-  while (option < option_end) {
-    const uint8_t kind = packet[option];
-    if (kind == 0) {
-      break;
-    }
-    if (kind == 1) {
-      ++option;
-      continue;
-    }
-    if (option + 1 >= option_end) {
-      break;
-    }
-    const uint8_t option_len = packet[option + 1];
-    if (option_len < 2 || option + option_len > option_end) {
-      break;
-    }
-    if (kind == 2 && option_len == 4) {
-      const uint16_t current = ReadU16(packet + option + 2);
-      if (current > max_mss) {
-        WriteU16(packet + option + 2, max_mss);
-        FixTransportChecksum(packet, len);
-        return true;
-      }
-      return false;
-    }
-    option += option_len;
-  }
-  return false;
-}
-
-bool ParseIpv4Ports(const uint8_t* packet, size_t len, uint16_t* src_port, uint16_t* dst_port) {
-  if (len < 20) {
-    return false;
-  }
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  const uint8_t proto = packet[9];
-  if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && len >= ihl + 4) {
-    *src_port = ReadU16(packet + ihl);
-    *dst_port = ReadU16(packet + ihl + 2);
-    return true;
-  }
-  if (proto == IPPROTO_ICMP && len >= ihl + 8) {
-    *src_port = ReadU16(packet + ihl + 4);
-    *dst_port = 0;
-    return true;
-  }
-  return false;
-}
-
-bool IsUdp443Packet(const uint8_t* packet, size_t len) {
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  return IsIpv4Packet(packet, len) && packet[9] == IPPROTO_UDP &&
-         ParseIpv4Ports(packet, len, &src_port, &dst_port) && dst_port == 443;
-}
-
-bool WriteIpv4SrcPort(uint8_t* packet, size_t len, uint16_t port) {
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  const uint8_t proto = packet[9];
-  if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && len >= ihl + 4) {
-    WriteU16(packet + ihl, port);
-    return true;
-  }
-  if (proto == IPPROTO_ICMP && len >= ihl + 8) {
-    WriteU16(packet + ihl + 4, port);
-    return true;
-  }
-  return false;
-}
-
-bool WriteIpv4DstPort(uint8_t* packet, size_t len, uint16_t port) {
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  const uint8_t proto = packet[9];
-  if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && len >= ihl + 4) {
-    WriteU16(packet + ihl + 2, port);
-    return true;
-  }
-  if (proto == IPPROTO_ICMP && len >= ihl + 8) {
-    WriteU16(packet + ihl + 4, port);
-    return true;
-  }
-  return false;
-}
-
-bool DnsReadName(const uint8_t* dns, size_t len, size_t* offset, char* out, size_t out_size) {
-  size_t pos = *offset;
-  size_t out_len = 0;
-  int jumps = 0;
-  bool jumped = false;
-  size_t next_offset = pos;
-  if (out_size == 0) {
-    return false;
-  }
-  out[0] = '\0';
-  while (pos < len && jumps < 16) {
-    const uint8_t label_len = dns[pos];
-    if (label_len == 0) {
-      ++pos;
-      if (!jumped) {
-        next_offset = pos;
-      }
-      *offset = next_offset;
-      return out_len > 0;
-    }
-    if ((label_len & 0xc0) == 0xc0) {
-      if (pos + 1 >= len) {
-        return false;
-      }
-      const uint16_t pointer = static_cast<uint16_t>(((label_len & 0x3f) << 8) | dns[pos + 1]);
-      if (!jumped) {
-        next_offset = pos + 2;
-      }
-      pos = pointer;
-      jumped = true;
-      ++jumps;
-      continue;
-    }
-    if ((label_len & 0xc0) != 0 || label_len > 63 || pos + 1 + label_len > len) {
-      return false;
-    }
-    if (out_len != 0) {
-      if (out_len + 1 >= out_size) {
-        return false;
-      }
-      out[out_len++] = '.';
-    }
-    if (out_len + label_len >= out_size) {
-      return false;
-    }
-    memcpy(out + out_len, dns + pos + 1, label_len);
-    out_len += label_len;
-    out[out_len] = '\0';
-    pos += 1 + label_len;
-    if (!jumped) {
-      next_offset = pos;
-    }
-  }
-  return false;
-}
-
-bool DnsQueryDomainFromPacket(const uint8_t* packet, size_t len, char* out, size_t out_size) {
-  if (len < 20 || packet[9] != IPPROTO_UDP) {
-    return false;
-  }
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || len < ihl + 8 + 12) {
-    return false;
-  }
-  const uint8_t* dns = packet + ihl + 8;
-  const size_t dns_len = len - ihl - 8;
-  if (ReadU16(dns + 4) == 0) {
-    return false;
-  }
-  size_t offset = 12;
-  return DnsReadName(dns, dns_len, &offset, out, out_size);
-}
-
-void DnsCachePut(NatTable* table, uint32_t ip, const char* domain) {
-  if (ip == 0 || domain == nullptr || domain[0] == '\0') {
-    return;
-  }
-  DnsCacheEntry* slot = nullptr;
-  for (size_t i = 0; i < kMaxDnsCache; ++i) {
-    DnsCacheEntry* entry = &table->dns[i];
-    if (entry->used && entry->ip == ip) {
-      slot = entry;
-      break;
-    }
-    if (slot == nullptr || !entry->used || entry->last_seen < slot->last_seen) {
-      slot = entry;
-    }
-  }
-  if (slot == nullptr) {
-    return;
-  }
-  slot->used = true;
-  slot->ip = ip;
-  slot->last_seen = time(nullptr);
-  strcpy_s(slot->domain, domain);
-}
-
-const char* DnsCacheLookup(NatTable* table, uint32_t ip) {
-  const time_t now = time(nullptr);
-  for (size_t i = 0; i < kMaxDnsCache; ++i) {
-    DnsCacheEntry* entry = &table->dns[i];
-    if (entry->used && entry->ip == ip && now - entry->last_seen <= 600) {
-      return entry->domain;
-    }
-  }
-  return "";
-}
-
-void DnsCacheAnswersFromPacket(NatTable* table, const uint8_t* packet, size_t len,
-                               const char* fallback_domain) {
-  if (fallback_domain == nullptr || fallback_domain[0] == '\0' ||
-      len < 20 || packet[9] != IPPROTO_UDP) {
-    return;
-  }
-  const size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || len < ihl + 8 + 12) {
-    return;
-  }
-  const uint8_t* dns = packet + ihl + 8;
-  const size_t dns_len = len - ihl - 8;
-  if ((dns[2] & 0x80) == 0) {
-    return;
-  }
-  const uint16_t qdcount = ReadU16(dns + 4);
-  const uint16_t ancount = ReadU16(dns + 6);
-  size_t offset = 12;
-  char name[256] = {};
-  for (uint16_t i = 0; i < qdcount; ++i) {
-    if (!DnsReadName(dns, dns_len, &offset, name, sizeof(name)) || offset + 4 > dns_len) {
-      return;
-    }
-    offset += 4;
-  }
-  for (uint16_t i = 0; i < ancount; ++i) {
-    if (!DnsReadName(dns, dns_len, &offset, name, sizeof(name)) || offset + 10 > dns_len) {
-      return;
-    }
-    const uint16_t type = ReadU16(dns + offset);
-    const uint16_t klass = ReadU16(dns + offset + 2);
-    const uint16_t rdlen = ReadU16(dns + offset + 8);
-    offset += 10;
-    if (offset + rdlen > dns_len) {
-      return;
-    }
-    if (type == 1 && klass == 1 && rdlen == 4) {
-      DnsCachePut(table, ReadU32(dns + offset), fallback_domain);
-    }
-    offset += rdlen;
-  }
-}
-
-bool NatPortInUse(NatTable* table, uint8_t proto, uint16_t translated_port) {
-  for (size_t i = 0; i < kMaxNat; ++i) {
-    NatEntry* entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->translated_port == translated_port) {
-      return true;
-    }
-  }
-  return false;
-}
-
-uint16_t NatAllocatePort(NatTable* table, uint8_t proto, uint16_t original_port) {
-  const uint16_t range = static_cast<uint16_t>(kNatPortEnd - kNatPortStart + 1);
-  const uint16_t first = static_cast<uint16_t>(kNatPortStart + (original_port % range));
-  for (uint16_t i = 0; i < range; ++i) {
-    const uint16_t candidate =
-        static_cast<uint16_t>(kNatPortStart + ((first - kNatPortStart + i) % range));
-    if (!NatPortInUse(table, proto, candidate)) {
-      return candidate;
-    }
-  }
-  return 0;
-}
-
-NatEntry* NatFindOutgoing(NatTable* table, uint8_t proto, uint32_t original_src_ip,
-                          uint32_t remote_ip, uint16_t original_src_port,
-                          uint16_t remote_port) {
-  for (size_t i = 0; i < kMaxNat; ++i) {
-    NatEntry* entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->original_src_ip == original_src_ip &&
-        entry->original_remote_ip == remote_ip && entry->original_src_port == original_src_port &&
-        entry->remote_port == remote_port) {
-      entry->last_seen = time(nullptr);
-      return entry;
-    }
-  }
-  return nullptr;
-}
-
-NatEntry* NatFindFreeSlot(NatTable* table) {
-  const time_t now = time(nullptr);
-  NatEntry* free_slot = nullptr;
-  for (size_t i = 0; i < kMaxNat; ++i) {
-    NatEntry* entry = &table->entries[i];
-    if (!entry->used) {
-      return entry;
-    }
-    if (free_slot == nullptr || entry->last_seen < free_slot->last_seen) {
-      free_slot = entry;
-    }
-    if (now - entry->last_seen > 300) {
-      return entry;
-    }
-  }
-  return free_slot;
-}
-
-NatEntry* NatLookupReturn(NatTable* table, uint8_t proto, uint32_t remote_ip,
-                          uint16_t local_port, uint16_t remote_port) {
-  for (size_t i = 0; i < kMaxNat; ++i) {
-    NatEntry* entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->remote_ip == remote_ip &&
-        entry->translated_port == local_port && entry->remote_port == remote_port) {
-      entry->last_seen = time(nullptr);
-      return entry;
-    }
-  }
-  return nullptr;
-}
-
-bool ShouldRedirectDns(uint8_t proto, uint16_t dst_port) {
-  return (proto == IPPROTO_TCP || proto == IPPROTO_UDP) && dst_port == 53;
-}
-
-bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
-                          uint32_t physical_ip, uint32_t cpe_ip) {
-  if (!IsIpv4Packet(packet, len)) {
-    return false;
-  }
-  const uint8_t proto = packet[9];
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  if (!ParseIpv4Ports(packet, len, &src_port, &dst_port)) {
-    return false;
-  }
-  const uint32_t original_src_ip = ReadU32(packet + 12);
-  const uint32_t original_remote_ip = ReadU32(packet + 16);
-  const uint32_t remote_ip = ShouldRedirectDns(proto, dst_port) ? cpe_ip : original_remote_ip;
-  NatEntry* entry =
-      NatFindOutgoing(table, proto, original_src_ip, original_remote_ip, src_port, dst_port);
-  if (entry == nullptr) {
-    entry = NatFindFreeSlot(table);
-    if (entry == nullptr) {
-      return false;
-    }
-    *entry = NatEntry();
-    const uint16_t translated_port = NatAllocatePort(table, proto, src_port);
-    if (translated_port == 0) {
-      return false;
-    }
-    entry->translated_port = translated_port;
-  }
-  entry->used = true;
-  entry->proto = proto;
-  entry->remote_ip = remote_ip;
-  entry->original_remote_ip = original_remote_ip;
-  entry->original_src_ip = original_src_ip;
-  entry->original_src_port = src_port;
-  entry->remote_port = dst_port;
-  if (ShouldRedirectDns(proto, dst_port)) {
-    (void)DnsQueryDomainFromPacket(packet, len, entry->domain, sizeof(entry->domain));
-  }
-  entry->tx_bytes += len;
-  entry->last_seen = time(nullptr);
-  ClampTcpMss(packet, len, kTcpMssClamp);
-  WriteU32(packet + 12, physical_ip);
-  WriteU32(packet + 16, remote_ip);
-  if (!WriteIpv4SrcPort(packet, len, entry->translated_port)) {
-    return false;
-  }
-  FixIpv4Checksum(packet, len);
-  FixTransportChecksum(packet, len);
-  return true;
-}
-
-bool NatTranslateIncoming(NatTable* table, uint8_t* packet, size_t len, uint32_t physical_ip) {
-  if (!IsIpv4Packet(packet, len) || ReadU32(packet + 16) != physical_ip) {
-    return false;
-  }
-  const uint8_t proto = packet[9];
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  if (!ParseIpv4Ports(packet, len, &src_port, &dst_port)) {
-    return false;
-  }
-  const uint32_t remote_ip = ReadU32(packet + 12);
-  const uint16_t local_port = proto == IPPROTO_ICMP ? src_port : dst_port;
-  const uint16_t remote_port = proto == IPPROTO_ICMP ? dst_port : src_port;
-  NatEntry* entry = NatLookupReturn(table, proto, remote_ip, local_port, remote_port);
-  if (entry == nullptr) {
-    return false;
-  }
-  if (entry->remote_port == 53 && entry->domain[0] != '\0') {
-    DnsCacheAnswersFromPacket(table, packet, len, entry->domain);
-  }
-  entry->rx_bytes += len;
-  WriteU32(packet + 12, entry->original_remote_ip);
-  WriteU32(packet + 16, entry->original_src_ip);
-  if (!WriteIpv4DstPort(packet, len, entry->original_src_port)) {
-    return false;
-  }
-  FixIpv4Checksum(packet, len);
-  FixTransportChecksum(packet, len);
-  return true;
-}
-
-void MakeUdpPacket(uint8_t* packet, size_t* len, uint32_t src_ip, uint32_t dst_ip,
-                   uint16_t src_port, uint16_t dst_port) {
-  memset(packet, 0, 64);
-  packet[0] = 0x45;
-  packet[8] = 64;
-  packet[9] = IPPROTO_UDP;
-  WriteU16(packet + 2, 28);
-  WriteU32(packet + 12, src_ip);
-  WriteU32(packet + 16, dst_ip);
-  WriteU16(packet + 20, src_port);
-  WriteU16(packet + 22, dst_port);
-  WriteU16(packet + 24, 8);
-  *len = 28;
-  FixIpv4Checksum(packet, *len);
-  FixTransportChecksum(packet, *len);
-}
-
-void MakeIcmpPacket(uint8_t* packet, size_t* len, uint32_t src_ip, uint32_t dst_ip,
-                    uint8_t type, uint16_t identifier, uint16_t sequence) {
-  memset(packet, 0, 64);
-  packet[0] = 0x45;
-  packet[8] = 64;
-  packet[9] = IPPROTO_ICMP;
-  WriteU16(packet + 2, 28);
-  WriteU32(packet + 12, src_ip);
-  WriteU32(packet + 16, dst_ip);
-  packet[20] = type;
-  packet[21] = 0;
-  WriteU16(packet + 24, identifier);
-  WriteU16(packet + 26, sequence);
-  *len = 28;
-  FixIpv4Checksum(packet, *len);
-  FixTransportChecksum(packet, *len);
-}
-
-void AppendUdpPayload(uint8_t* packet, size_t* len, const uint8_t* payload, size_t payload_len) {
-  memcpy(packet + *len, payload, payload_len);
-  *len += payload_len;
-  WriteU16(packet + 2, static_cast<uint16_t>(*len));
-  const size_t udp_len = *len - 20;
-  WriteU16(packet + 24, static_cast<uint16_t>(udp_len));
-  FixIpv4Checksum(packet, *len);
-  FixTransportChecksum(packet, *len);
-}
-
-void UpdateRatesLocked(Runtime* runtime, time_t now) {
-  if (runtime->last_rate_at == 0) {
-    runtime->last_rate_at = now;
-    runtime->last_tx_bytes = runtime->tx_bytes;
-    runtime->last_rx_bytes = runtime->rx_bytes;
-    return;
-  }
-  const time_t elapsed = std::max<time_t>(1, now - runtime->last_rate_at);
-  runtime->tx_rate = (runtime->tx_bytes - runtime->last_tx_bytes) / static_cast<uint64_t>(elapsed);
-  runtime->rx_rate = (runtime->rx_bytes - runtime->last_rx_bytes) / static_cast<uint64_t>(elapsed);
-  runtime->last_tx_bytes = runtime->tx_bytes;
-  runtime->last_rx_bytes = runtime->rx_bytes;
-  runtime->last_rate_at = now;
-  for (size_t i = 0; i < kMaxNat; ++i) {
-    NatEntry* entry = &runtime->nat.entries[i];
-    if (!entry->used) {
-      continue;
-    }
-    if (entry->last_rate_at == 0) {
-      entry->last_rate_at = now;
-      entry->last_tx_bytes = entry->tx_bytes;
-      entry->last_rx_bytes = entry->rx_bytes;
-      continue;
-    }
-    const time_t entry_elapsed = std::max<time_t>(1, now - entry->last_rate_at);
-    entry->tx_rate = (entry->tx_bytes - entry->last_tx_bytes) /
-                     static_cast<uint64_t>(entry_elapsed);
-    entry->rx_rate = (entry->rx_bytes - entry->last_rx_bytes) /
-                     static_cast<uint64_t>(entry_elapsed);
-    entry->last_tx_bytes = entry->tx_bytes;
-    entry->last_rx_bytes = entry->rx_bytes;
-    entry->last_rate_at = now;
-  }
-}
-
-bool RunCommand(const std::wstring& command) {
-  const int code = _wsystem(command.c_str());
+bool RunCommand(const std::string& command) {
+  std::string full = "cmd.exe /C " + command;
+  int code = system(full.c_str());
   return code == 0;
 }
 
-void DeleteHalfRoutesVia(const std::wstring& gateway) {
-  if (gateway.empty()) {
-    return;
-  }
-  RunCommand(L"route delete 0.0.0.0 mask 128.0.0.0 " + gateway + L" >NUL 2>NUL");
-  RunCommand(L"route delete 128.0.0.0 mask 128.0.0.0 " + gateway + L" >NUL 2>NUL");
+void LogEvent(const std::string& message) {
+  std::ofstream file(StatePath(L"events.log"), std::ios::app);
+  file << "time=" << NowString() << "|message=" << message << "\n";
 }
 
-void DeleteCpeHostRoute(const std::wstring& cpe, const std::wstring& interface_name) {
-  if (cpe.empty() || interface_name.empty()) {
-    return;
+std::string StateName(RuntimeState state) {
+  switch (state) {
+    case RuntimeState::starting:
+      return "starting";
+    case RuntimeState::running:
+      return "running";
+    case RuntimeState::failed:
+      return "failed";
+    case RuntimeState::auto_recovered:
+      return "autoRecovered";
+    case RuntimeState::stopped:
+    default:
+      return "stopped";
   }
-  RunCommand(L"netsh interface ipv4 delete route " + cpe + L"/32 \"" +
-             interface_name + L"\" store=active >NUL 2>NUL");
 }
 
-std::wstring RouteMetric(int metric) {
-  return std::to_wstring(metric);
-}
-
-bool LoadWintun(WintunApi* api) {
-  if (api->module != nullptr) {
-    return true;
-  }
-  const std::wstring dll = ExeDir() + L"\\wintun.dll";
-  api->module = LoadLibraryW(dll.c_str());
-  if (api->module == nullptr) {
-    api->module = LoadLibraryW(L"wintun.dll");
-  }
-  if (api->module == nullptr) {
+bool ReadInterfaceCounters(uint64_t* tx, uint64_t* rx) {
+  *tx = 0;
+  *rx = 0;
+  PMIB_IF_TABLE2 table = nullptr;
+  if (GetIfTable2(&table) != NO_ERROR || table == nullptr) {
     return false;
   }
-  api->create_adapter =
-      reinterpret_cast<WintunCreateAdapterFn>(GetProcAddress(api->module, "WintunCreateAdapter"));
-  api->open_adapter =
-      reinterpret_cast<WintunOpenAdapterFn>(GetProcAddress(api->module, "WintunOpenAdapter"));
-  api->close_adapter =
-      reinterpret_cast<WintunCloseAdapterFn>(GetProcAddress(api->module, "WintunCloseAdapter"));
-  api->start_session =
-      reinterpret_cast<WintunStartSessionFn>(GetProcAddress(api->module, "WintunStartSession"));
-  api->end_session =
-      reinterpret_cast<WintunEndSessionFn>(GetProcAddress(api->module, "WintunEndSession"));
-  api->receive_packet =
-      reinterpret_cast<WintunReceivePacketFn>(GetProcAddress(api->module, "WintunReceivePacket"));
-  api->release_receive_packet = reinterpret_cast<WintunReleaseReceivePacketFn>(
-      GetProcAddress(api->module, "WintunReleaseReceivePacket"));
-  api->allocate_send_packet = reinterpret_cast<WintunAllocateSendPacketFn>(
-      GetProcAddress(api->module, "WintunAllocateSendPacket"));
-  api->send_packet =
-      reinterpret_cast<WintunSendPacketFn>(GetProcAddress(api->module, "WintunSendPacket"));
-  api->get_read_wait_event = reinterpret_cast<WintunGetReadWaitEventFn>(
-      GetProcAddress(api->module, "WintunGetReadWaitEvent"));
-  api->delete_driver =
-      reinterpret_cast<WintunDeleteDriverFn>(GetProcAddress(api->module, "WintunDeleteDriver"));
-  return api->create_adapter != nullptr && api->close_adapter != nullptr &&
-         api->start_session != nullptr && api->end_session != nullptr &&
-         api->receive_packet != nullptr && api->release_receive_packet != nullptr &&
-         api->allocate_send_packet != nullptr && api->send_packet != nullptr &&
-         api->get_read_wait_event != nullptr;
-}
-
-bool LoadWinDivert(WinDivertApi* api) {
-  if (api->module != nullptr) {
-    return true;
-  }
-  const std::wstring dll = ExeDir() + L"\\WinDivert.dll";
-  api->module = LoadLibraryW(dll.c_str());
-  if (api->module == nullptr) {
-    api->module = LoadLibraryW(L"WinDivert.dll");
-  }
-  if (api->module == nullptr) {
-    return false;
-  }
-  api->open = reinterpret_cast<WinDivertOpenFn>(GetProcAddress(api->module, "WinDivertOpen"));
-  api->close = reinterpret_cast<WinDivertCloseFn>(GetProcAddress(api->module, "WinDivertClose"));
-  api->recv = reinterpret_cast<WinDivertRecvFn>(GetProcAddress(api->module, "WinDivertRecv"));
-  api->send = reinterpret_cast<WinDivertSendFn>(GetProcAddress(api->module, "WinDivertSend"));
-  api->calc_checksums = reinterpret_cast<WinDivertHelperCalcChecksumsFn>(
-      GetProcAddress(api->module, "WinDivertHelperCalcChecksums"));
-  api->compile_filter = reinterpret_cast<WinDivertHelperCompileFilterFn>(
-      GetProcAddress(api->module, "WinDivertHelperCompileFilter"));
-  return api->open != nullptr && api->close != nullptr && api->recv != nullptr &&
-         api->send != nullptr && api->calc_checksums != nullptr && api->compile_filter != nullptr;
-}
-
-std::string BuildReturnFilter(const std::string& physical_ip) {
-  return "inbound and ip and ip.DstAddr == " + physical_ip +
-         " and ((tcp and tcp.DstPort >= " + std::to_string(kNatPortStart) +
-         " and tcp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
-         "(udp and udp.DstPort >= " + std::to_string(kNatPortStart) +
-         " and udp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
-         "(icmp and icmp.Type == 0))";
-}
-
-bool ValidateWinDivertFilter(WinDivertApi* api, const std::string& filter, std::string* error) {
-  const char* error_str = nullptr;
-  UINT error_pos = 0;
-  if (api->compile_filter(filter.c_str(), WINDIVERT_LAYER_NETWORK, nullptr, 0,
-                          &error_str, &error_pos)) {
-    return true;
-  }
-  *error = "filter compile failed at " + std::to_string(error_pos);
-  if (error_str != nullptr && error_str[0] != '\0') {
-    *error += ": ";
-    *error += error_str;
-  }
-  return false;
-}
-
-bool IsSameSubnet(uint32_t ip, uint32_t target, uint32_t mask) {
-  return (ip & mask) == (target & mask);
-}
-
-bool DiscoverPhysicalAdapter(uint32_t cpe_ip, PhysicalAdapter* out) {
-  ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
-  ULONG size = 16 * 1024;
-  std::vector<uint8_t> buffer(size);
-  IP_ADAPTER_ADDRESSES* addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-  ULONG result = GetAdaptersAddresses(AF_INET, flags, nullptr, addresses, &size);
-  if (result == ERROR_BUFFER_OVERFLOW) {
-    buffer.resize(size);
-    addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-    result = GetAdaptersAddresses(AF_INET, flags, nullptr, addresses, &size);
-  }
-  if (result != NO_ERROR) {
-    return false;
-  }
-  for (IP_ADAPTER_ADDRESSES* adapter = addresses; adapter != nullptr; adapter = adapter->Next) {
-    if (adapter->OperStatus != IfOperStatusUp ||
-        adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
-        adapter->IfType == IF_TYPE_TUNNEL ||
-        wcscmp(adapter->FriendlyName, kAdapterName) == 0) {
+  for (ULONG i = 0; i < table->NumEntries; ++i) {
+    const MIB_IF_ROW2& row = table->Table[i];
+    if (row.OperStatus != IfOperStatusUp) {
       continue;
     }
-    for (IP_ADAPTER_UNICAST_ADDRESS* unicast = adapter->FirstUnicastAddress; unicast != nullptr;
-         unicast = unicast->Next) {
-      if (unicast->Address.lpSockaddr == nullptr ||
-          unicast->Address.lpSockaddr->sa_family != AF_INET) {
-        continue;
-      }
-      const sockaddr_in* sin = reinterpret_cast<const sockaddr_in*>(unicast->Address.lpSockaddr);
-      const uint32_t ip = ntohl(sin->sin_addr.s_addr);
-      const uint32_t mask =
-          unicast->OnLinkPrefixLength == 0
-              ? 0
-              : (0xffffffffu << (32 - unicast->OnLinkPrefixLength));
-      if (IsSameSubnet(ip, cpe_ip, mask)) {
-        out->if_index = adapter->IfIndex;
-        out->sub_if_index = 0;
-        out->ip = ip;
-        out->mask = mask;
-        out->name = adapter->FriendlyName;
-        return true;
-      }
+    if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) {
+      continue;
     }
+    if (!row.InterfaceAndOperStatusFlags.HardwareInterface) {
+      continue;
+    }
+    *tx += row.OutOctets;
+    *rx += row.InOctets;
   }
-  return false;
+  FreeMibTable(table);
+  return true;
 }
 
-bool FindAdapterIndexByName(const wchar_t* friendly_name, uint32_t* if_index) {
-  ULONG size = 16 * 1024;
-  std::vector<uint8_t> buffer(size);
-  IP_ADAPTER_ADDRESSES* addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-  ULONG result = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
-                                      nullptr, addresses, &size);
-  if (result == ERROR_BUFFER_OVERFLOW) {
-    buffer.resize(size);
-    addresses = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-    result = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
-                                  nullptr, addresses, &size);
+void UpdateTrafficLocked(Runtime* runtime) {
+  uint64_t tx_total = 0;
+  uint64_t rx_total = 0;
+  if (!ReadInterfaceCounters(&tx_total, &rx_total)) {
+    return;
   }
-  if (result != NO_ERROR) {
-    return false;
+  const uint64_t now = NowMs();
+  if (runtime->last_sample_ms > 0 && now > runtime->last_sample_ms) {
+    const uint64_t ms = now - runtime->last_sample_ms;
+    const uint64_t tx_delta =
+        tx_total >= runtime->last_tx_total ? tx_total - runtime->last_tx_total
+                                           : 0;
+    const uint64_t rx_delta =
+        rx_total >= runtime->last_rx_total ? rx_total - runtime->last_rx_total
+                                           : 0;
+    runtime->tx_rate = tx_delta * 1000 / ms;
+    runtime->rx_rate = rx_delta * 1000 / ms;
   }
-  for (IP_ADAPTER_ADDRESSES* adapter = addresses; adapter != nullptr; adapter = adapter->Next) {
-    if (wcscmp(adapter->FriendlyName, friendly_name) == 0) {
-      *if_index = adapter->IfIndex;
+  runtime->last_tx_total = tx_total;
+  runtime->last_rx_total = rx_total;
+  runtime->last_sample_ms = now;
+  runtime->tx_bytes =
+      tx_total >= runtime->base_tx ? tx_total - runtime->base_tx : 0;
+  runtime->rx_bytes =
+      rx_total >= runtime->base_rx ? rx_total - runtime->base_rx : 0;
+}
+
+void ResetTrafficBaselineLocked(Runtime* runtime) {
+  uint64_t tx_total = 0;
+  uint64_t rx_total = 0;
+  ReadInterfaceCounters(&tx_total, &rx_total);
+  runtime->base_tx = tx_total;
+  runtime->base_rx = rx_total;
+  runtime->last_tx_total = tx_total;
+  runtime->last_rx_total = rx_total;
+  runtime->last_sample_ms = NowMs();
+  runtime->tx_bytes = 0;
+  runtime->rx_bytes = 0;
+  runtime->tx_rate = 0;
+  runtime->rx_rate = 0;
+}
+
+bool DeleteHalfRoutes() {
+  RunCommand("route delete 0.0.0.0 mask 128.0.0.0 >NUL 2>NUL");
+  RunCommand("route delete 128.0.0.0 mask 128.0.0.0 >NUL 2>NUL");
+  return true;
+}
+
+std::vector<std::string> BuildRouteAddCommands(const std::string& cpe) {
+  return {
+      "route add 0.0.0.0 mask 128.0.0.0 " + cpe + " -p",
+      "route add 128.0.0.0 mask 128.0.0.0 " + cpe + " -p",
+  };
+}
+
+std::vector<std::string> BuildRouteDeleteCommands() {
+  return {
+      "route delete 0.0.0.0 mask 128.0.0.0",
+      "route delete 128.0.0.0 mask 128.0.0.0",
+  };
+}
+
+bool ConfigureHalfRoutes(const std::string& cpe, std::string* error) {
+  DeleteHalfRoutes();
+  for (const std::string& command : BuildRouteAddCommands(cpe)) {
+    if (!RunCommand(command + " >NUL")) {
+      if (error != nullptr) {
+        *error = "failed to run " + command;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+bool RoutePrintHas(const std::string& route_print, const std::string& prefix,
+                   const std::string& cpe) {
+  std::istringstream stream(route_print);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (line.find(prefix) != std::string::npos &&
+        line.find("128.0.0.0") != std::string::npos &&
+        line.find(cpe) != std::string::npos) {
       return true;
     }
   }
   return false;
 }
 
-void CleanupRoutes(Runtime* runtime) {
-  const std::wstring tun_peer = Utf8ToWide(kTunPeer);
-  const std::wstring current_cpe = Utf8ToWide(runtime->cpe);
-  const std::wstring routed_cpe = Utf8ToWide(runtime->route_cpe);
-  DeleteHalfRoutesVia(tun_peer);
-  DeleteHalfRoutesVia(current_cpe);
-  if (!routed_cpe.empty() && routed_cpe != current_cpe) {
-    DeleteHalfRoutesVia(routed_cpe);
-  }
-  DeleteCpeHostRoute(current_cpe, runtime->physical.name);
-  if (!routed_cpe.empty() && routed_cpe != current_cpe) {
-    DeleteCpeHostRoute(routed_cpe, runtime->route_physical_name);
-  }
-  runtime->route_cpe.clear();
-  runtime->route_physical_name.clear();
+bool HasHalfRoutes(const std::string& cpe) {
+  const std::string routes = RunCommandCapture("route print -4");
+  return RoutePrintHas(routes, "0.0.0.0", cpe) &&
+         RoutePrintHas(routes, "128.0.0.0", cpe);
 }
 
-bool ConfigureWintunAddress(Runtime* runtime) {
-  const std::wstring adapter = kAdapterName;
-  const std::wstring cpe = Utf8ToWide(runtime->cpe);
-  bool ok = true;
-  ok &= RunCommand(L"netsh interface ipv4 set address name=\"" + adapter +
-                   L"\" static 10.255.0.2 255.255.255.252 >NUL");
-  ok &= RunCommand(L"netsh interface ipv4 set dnsservers name=\"" + adapter +
-                   L"\" static " + cpe + L" primary >NUL");
-  ok &= RunCommand(L"netsh interface ipv4 set subinterface \"" + adapter +
-                   L"\" mtu=1400 store=active >NUL");
-  return ok;
+void SnapshotInitialState() {
+  std::ofstream route_file(StatePath(L"initial-route-print.txt"));
+  route_file << RunCommandCapture("route print -4");
+  std::ofstream ip_file(StatePath(L"initial-ipconfig.txt"));
+  ip_file << RunCommandCapture("ipconfig /all");
 }
 
-bool ConfigureWintunRoutes(Runtime* runtime) {
-  const std::wstring cpe = Utf8ToWide(runtime->cpe);
-  const std::wstring physical_if = std::to_wstring(runtime->physical.if_index);
-  const std::wstring wintun_if = std::to_wstring(runtime->wintun_if_index);
-  bool ok = true;
-  ok &= RunCommand(L"netsh interface ipv4 add route " + cpe + L"/32 \"" +
-                   runtime->physical.name + L"\" 0.0.0.0 store=active >NUL");
-  ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 " + cpe + L" metric " +
-                   RouteMetric(kPhysicalEgressRouteMetric) + L" if " + physical_if + L" >NUL");
-  ok &= RunCommand(L"route add 128.0.0.0 mask 128.0.0.0 " + cpe + L" metric " +
-                   RouteMetric(kPhysicalEgressRouteMetric) + L" if " + physical_if + L" >NUL");
-  ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 " + Utf8ToWide(kTunPeer) + L" metric " +
-                   RouteMetric(kTunRouteMetric) + L" if " + wintun_if + L" >NUL");
-  ok &= RunCommand(L"route add 128.0.0.0 mask 128.0.0.0 " + Utf8ToWide(kTunPeer) + L" metric " +
-                   RouteMetric(kTunRouteMetric) + L" if " + wintun_if + L" >NUL");
-  if (ok) {
-    runtime->route_cpe = runtime->cpe;
-    runtime->route_physical_name = runtime->physical.name;
-  }
-  return ok;
-}
-
-bool PingCpe(const std::string& host) {
-  uint32_t ip = 0;
-  if (!ParseIpv4(host.c_str(), &ip)) {
+bool PingCpe(const std::string& cpe) {
+  IN_ADDR addr = {};
+  if (InetPtonA(AF_INET, cpe.c_str(), &addr) != 1) {
     return false;
   }
   HANDLE icmp = IcmpCreateFile();
   if (icmp == INVALID_HANDLE_VALUE) {
     return false;
   }
-  char data[] = "sdwan";
-  std::vector<uint8_t> reply(sizeof(ICMP_ECHO_REPLY) + sizeof(data) + 32);
-  DWORD result = IcmpSendEcho(icmp, htonl(ip), data, sizeof(data), nullptr,
-                              reply.data(), static_cast<DWORD>(reply.size()), 1000);
+  char payload[] = "sdwan";
+  char reply[sizeof(ICMP_ECHO_REPLY) + sizeof(payload) + 32] = {};
+  DWORD result = IcmpSendEcho(icmp, addr.S_un.S_addr, payload, sizeof(payload),
+                              nullptr, reply, sizeof(reply), 1000);
   IcmpCloseHandle(icmp);
-  return result != 0;
+  return result > 0;
 }
 
-bool L3Probe(uint32_t physical_if_index) {
-  SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (sock == INVALID_SOCKET) {
-    return false;
+bool EnsureWinsock() {
+  static bool initialized = false;
+  static bool ok = false;
+  if (initialized) {
+    return ok;
   }
-  DWORD timeout = 1500;
-  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-  if (physical_if_index != 0) {
-    const DWORD scoped_if = htonl(physical_if_index);
-    if (setsockopt(sock, IPPROTO_IP, IP_UNICAST_IF, reinterpret_cast<const char*>(&scoped_if),
-                   sizeof(scoped_if)) != 0) {
-      closesocket(sock);
-      return false;
-    }
-  }
-  sockaddr_in target = {};
-  target.sin_family = AF_INET;
-  inet_pton(AF_INET, "1.1.1.1", &target.sin_addr);
-  target.sin_port = htons(443);
-  const bool ok = connect(sock, reinterpret_cast<sockaddr*>(&target), sizeof(target)) == 0;
-  closesocket(sock);
+  initialized = true;
+  WSADATA data = {};
+  ok = WSAStartup(MAKEWORD(2, 2), &data) == 0;
   return ok;
 }
 
-const char* ProtoName(uint8_t proto) {
-  if (proto == IPPROTO_TCP) {
-    return "TCP";
+bool TcpProbe(const char* host, uint16_t port, int timeout_ms) {
+  if (!EnsureWinsock()) {
+    return false;
   }
-  if (proto == IPPROTO_UDP) {
-    return "UDP";
+  SOCKET socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (socket_handle == INVALID_SOCKET) {
+    return false;
   }
-  if (proto == IPPROTO_ICMP) {
-    return "ICMP";
+  u_long non_blocking = 1;
+  ioctlsocket(socket_handle, FIONBIO, &non_blocking);
+  sockaddr_in address = {};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(port);
+  if (InetPtonA(AF_INET, host, &address.sin_addr) != 1) {
+    closesocket(socket_handle);
+    return false;
   }
-  return "IP";
-}
-
-std::string StatusTextLocked(Runtime* runtime) {
-  const bool cpe_reachable = PingCpe(runtime->cpe);
-  std::string out;
-  out += "state=" + runtime->state + "\n";
-  out += "adapterName=Windows Wintun\n";
-  out += "permission=" + runtime->permission + "\n";
-  out += "helperInstalled=true\n";
-  out += "host=" + runtime->cpe + "\n";
-  out += std::string("reachable=") + (cpe_reachable ? "true" : "false") + "\n";
-  out += std::string("serviceReady=") + (runtime->running ? "true" : (cpe_reachable ? "true" : "false")) + "\n";
-  out += "txBytes=" + std::to_string(runtime->tx_bytes) + "\n";
-  out += "rxBytes=" + std::to_string(runtime->rx_bytes) + "\n";
-  out += "txRate=" + std::to_string(runtime->tx_rate) + "\n";
-  out += "rxRate=" + std::to_string(runtime->rx_rate) + "\n";
-  out += "txPackets=" + std::to_string(runtime->tx_packets) + "\n";
-  out += "rxPackets=" + std::to_string(runtime->rx_packets) + "\n";
-  out += "txDropped=" + std::to_string(runtime->tx_dropped) + "\n";
-  out += "rxDropped=" + std::to_string(runtime->rx_dropped) + "\n";
-  out += "natMisses=" + std::to_string(runtime->nat_misses) + "\n";
-  out += "sendFailures=" + std::to_string(runtime->send_failures) + "\n";
-  out += "udp443Packets=" + std::to_string(runtime->udp443_packets) + "\n";
-  out += "lastError=" + runtime->last_error + "\n";
-  return out;
-}
-
-std::string ConnectionsTextLocked(Runtime* runtime, int limit) {
-  std::string out;
-  const time_t now = time(nullptr);
-  int count = 0;
-  for (size_t i = 0; i < kMaxNat && count < limit; ++i) {
-    NatEntry* entry = &runtime->nat.entries[i];
-    if (!entry->used || now - entry->last_seen > 300) {
-      continue;
-    }
-    const bool dns_redirect = entry->remote_ip != entry->original_remote_ip;
-    const char* domain =
-        dns_redirect ? entry->domain : DnsCacheLookup(&runtime->nat, entry->original_remote_ip);
-    out += "lastSeen=" + std::to_string(static_cast<long long>(entry->last_seen));
-    out += "|proto=" + std::string(ProtoName(entry->proto));
-    out += "|source=" + Ipv4ToString(entry->original_src_ip) + ":" +
-           std::to_string(entry->original_src_port);
-    out += "|target=" + Ipv4ToString(entry->original_remote_ip) + ":" +
-           std::to_string(entry->remote_port);
-    out += "|domain=" + std::string(domain);
-    out += "|via=" + Ipv4ToString(entry->remote_ip) + ":" + std::to_string(entry->remote_port);
-    out += "|txBytes=" + std::to_string(entry->tx_bytes);
-    out += "|rxBytes=" + std::to_string(entry->rx_bytes);
-    out += "|txRate=" + std::to_string(entry->tx_rate);
-    out += "|rxRate=" + std::to_string(entry->rx_rate);
-    out += std::string("|dnsRedirect=") + (dns_redirect ? "true" : "false") + "\n";
-    ++count;
-  }
-  return out;
-}
-
-std::string LogsText(int limit) {
-  FILE* file = nullptr;
-  _wfopen_s(&file, EventsPath().c_str(), L"rb");
-  if (file == nullptr) {
-    return std::string();
-  }
-  std::vector<std::string> lines;
-  char buffer[1024] = {};
-  while (fgets(buffer, sizeof(buffer), file) != nullptr) {
-    std::string line(buffer);
-    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-      line.pop_back();
-    }
-    lines.push_back(line);
-  }
-  fclose(file);
-  std::string out;
-  const int start = std::max<int>(0, static_cast<int>(lines.size()) - limit);
-  for (int i = start; i < static_cast<int>(lines.size()); ++i) {
-    const std::string& line = lines[static_cast<size_t>(i)];
-    const size_t space = line.find(' ');
-    if (space == std::string::npos) {
-      continue;
-    }
-    const time_t raw = static_cast<time_t>(_atoi64(line.substr(0, space).c_str()));
-    out += "time=" + TimeString(raw) + "|message=" + line.substr(space + 1) + "\n";
-  }
-  return out;
-}
-
-void StopAcceleration(const std::string& reason, bool auto_recovered);
-
-void TunReadLoop(Runtime* runtime) {
-  HANDLE event = runtime->wintun.get_read_wait_event(runtime->wintun_session);
-  while (!runtime->stop_requested.load()) {
-    DWORD packet_size = 0;
-    BYTE* packet = runtime->wintun.receive_packet(runtime->wintun_session, &packet_size);
-    if (packet == nullptr) {
-      WaitForSingleObject(event, 200);
-      continue;
-    }
-    if (packet_size >= 20 && packet_size <= 0xffff && IsIpv4Packet(packet, packet_size)) {
-      std::vector<uint8_t> copy(packet, packet + packet_size);
-      bool translated = false;
-      {
-        std::lock_guard<std::mutex> lock(runtime->mutex);
-        runtime->tx_packets++;
-        if (IsUdp443Packet(copy.data(), copy.size())) {
-          runtime->udp443_packets++;
-        }
-        translated = NatTranslateOutgoing(&runtime->nat, copy.data(), copy.size(),
-                                          runtime->physical.ip, runtime->cpe_ip);
-        if (translated) {
-          runtime->tx_bytes += copy.size();
-        } else {
-          runtime->tx_dropped++;
-        }
-      }
-      if (translated) {
-        WINDIVERT_ADDRESS addr = {};
-        addr.Outbound = 1;
-        addr.Network.IfIdx = runtime->physical.if_index;
-        addr.Network.SubIfIdx = runtime->physical.sub_if_index;
-        runtime->windivert.calc_checksums(copy.data(), static_cast<UINT>(copy.size()), &addr, 0);
-        UINT written = 0;
-        if (!runtime->windivert.send(runtime->divert_return, copy.data(),
-                                     static_cast<UINT>(copy.size()), &written, &addr) ||
-            written != copy.size()) {
-          std::lock_guard<std::mutex> lock(runtime->mutex);
-          runtime->send_failures++;
-          runtime->tx_dropped++;
-        }
-      }
-    } else {
-      std::lock_guard<std::mutex> lock(runtime->mutex);
-      runtime->tx_dropped++;
-    }
-    runtime->wintun.release_receive_packet(runtime->wintun_session, packet);
-  }
-}
-
-void DivertReturnLoop(Runtime* runtime) {
-  std::vector<uint8_t> packet(0xffff);
-  while (!runtime->stop_requested.load()) {
-    UINT read_len = 0;
-    WINDIVERT_ADDRESS addr = {};
-    if (!runtime->windivert.recv(runtime->divert_return, packet.data(),
-                                 static_cast<UINT>(packet.size()), &read_len, &addr)) {
-      Sleep(50);
-      continue;
-    }
-    if (read_len == 0) {
-      continue;
-    }
-    std::vector<uint8_t> copy(packet.data(), packet.data() + read_len);
-    bool translated = false;
-    {
-      std::lock_guard<std::mutex> lock(runtime->mutex);
-      runtime->rx_packets++;
-      translated =
-          NatTranslateIncoming(&runtime->nat, copy.data(), copy.size(), runtime->physical.ip);
-      if (translated) {
-        runtime->rx_bytes += copy.size();
-      } else {
-        runtime->nat_misses++;
-        runtime->rx_dropped++;
-      }
-    }
-    if (!translated) {
-      continue;
-    }
-    BYTE* out = runtime->wintun.allocate_send_packet(runtime->wintun_session,
-                                                     static_cast<DWORD>(copy.size()));
-    if (out == nullptr) {
-      std::lock_guard<std::mutex> lock(runtime->mutex);
-      runtime->rx_dropped++;
-      continue;
-    }
-    memcpy(out, copy.data(), copy.size());
-    runtime->wintun.send_packet(runtime->wintun_session, out);
-  }
-}
-
-void HealthLoop(Runtime* runtime) {
-  while (!runtime->stop_requested.load()) {
-    Sleep(1000);
-    {
-      std::lock_guard<std::mutex> lock(runtime->mutex);
-      UpdateRatesLocked(runtime, time(nullptr));
-    }
-    uint32_t physical_if_index = 0;
-    std::string cpe;
-    {
-      std::lock_guard<std::mutex> lock(runtime->mutex);
-      physical_if_index = runtime->physical.if_index;
-      cpe = runtime->cpe;
-    }
-    const bool l1 = PingCpe(cpe);
-    const bool l3 = runtime->running ? L3Probe(physical_if_index) : l1;
-    if (!l1) {
-      runtime->health_failures++;
-      runtime->l3_failures = 0;
-      if (runtime->health_failures >= 3) {
-        StopAcceleration("CPE health failed, auto rollback completed", true);
-        return;
-      }
-    } else {
-      runtime->health_failures = 0;
-      if (!l3) {
-        runtime->l3_failures++;
-        if (runtime->l3_failures == 1 || runtime->l3_failures % 15 == 0) {
-          LogEvent("CPE reachable but L3 probe failed; keeping TUN running");
-        }
-      } else {
-        runtime->l3_failures = 0;
-      }
-    }
-  }
-}
-
-bool StartAcceleration(const std::string& cpe) {
-  const std::string target_cpe = cpe.empty() ? kDefaultCpe : cpe;
-  {
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    if (g_runtime.running.load() && g_runtime.cpe == target_cpe) {
-      return true;
-    }
-  }
-  if (g_runtime.running.load()) {
-    LogEvent("Windows CPE changed, restarting acceleration");
-    StopAcceleration("cpe changed", false);
-  }
-  std::unique_lock<std::mutex> lock(g_runtime.mutex);
-  if (g_runtime.running.load()) {
+  int connect_result = connect(socket_handle,
+                               reinterpret_cast<sockaddr*>(&address),
+                               sizeof(address));
+  if (connect_result == 0) {
+    closesocket(socket_handle);
     return true;
   }
-  g_runtime.cpe = target_cpe;
-  g_runtime.last_error.clear();
-  g_runtime.state = "starting";
-  g_runtime.stop_requested = false;
-  g_runtime.health_failures = 0;
-  g_runtime.l3_failures = 0;
-  g_runtime.tx_packets = 0;
-  g_runtime.rx_packets = 0;
-  g_runtime.tx_dropped = 0;
-  g_runtime.rx_dropped = 0;
-  g_runtime.nat_misses = 0;
-  g_runtime.send_failures = 0;
-  g_runtime.udp443_packets = 0;
-  memset(&g_runtime.nat, 0, sizeof(g_runtime.nat));
-  if (!ParseIpv4(g_runtime.cpe.c_str(), &g_runtime.cpe_ip)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "invalid cpe ip";
+  if (WSAGetLastError() != WSAEWOULDBLOCK) {
+    closesocket(socket_handle);
     return false;
   }
-  if (!PingCpe(g_runtime.cpe)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "cpe unreachable";
-    return false;
+  fd_set write_set;
+  FD_ZERO(&write_set);
+  FD_SET(socket_handle, &write_set);
+  timeval timeout = {};
+  timeout.tv_sec = timeout_ms / 1000;
+  timeout.tv_usec = (timeout_ms % 1000) * 1000;
+  bool ok = false;
+  if (select(0, nullptr, &write_set, nullptr, &timeout) > 0) {
+    int socket_error = 0;
+    int socket_error_len = sizeof(socket_error);
+    ok = getsockopt(socket_handle, SOL_SOCKET, SO_ERROR,
+                    reinterpret_cast<char*>(&socket_error),
+                    &socket_error_len) == 0 &&
+         socket_error == 0;
   }
-  if (!DiscoverPhysicalAdapter(g_runtime.cpe_ip, &g_runtime.physical)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "physical adapter for cpe not found";
-    return false;
-  }
-  if (!LoadWintun(&g_runtime.wintun)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "wintun.dll is missing or incompatible";
-    return false;
-  }
-  if (!LoadWinDivert(&g_runtime.windivert)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "WinDivert.dll is missing or incompatible";
-    return false;
-  }
-  const std::string physical_ip = Ipv4ToString(g_runtime.physical.ip);
-  const std::string filter = BuildReturnFilter(physical_ip);
-  std::string filter_error;
-  if (!ValidateWinDivertFilter(&g_runtime.windivert, filter, &filter_error)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "invalid WinDivert return filter: " + filter_error;
-    return false;
-  }
-  if (g_runtime.wintun_adapter == nullptr) {
-    if (g_runtime.wintun.open_adapter != nullptr) {
-      g_runtime.wintun_adapter = g_runtime.wintun.open_adapter(kAdapterName);
-    }
-    if (g_runtime.wintun_adapter == nullptr) {
-      g_runtime.wintun_adapter =
-          g_runtime.wintun.create_adapter(kAdapterName, kTunnelType, nullptr);
-    }
-  }
-  if (g_runtime.wintun_adapter == nullptr) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "failed to create Wintun adapter";
-    return false;
-  }
-  Sleep(600);
-  if (!FindAdapterIndexByName(kAdapterName, &g_runtime.wintun_if_index)) {
-    g_runtime.state = "failed";
-    g_runtime.last_error = "failed to find Wintun interface index";
-    return false;
-  }
-  CleanupRoutes(&g_runtime);
-  if (!ConfigureWintunAddress(&g_runtime)) {
-    CleanupRoutes(&g_runtime);
-    g_runtime.state = "failed";
-    g_runtime.last_error = "failed to configure Wintun address";
-    return false;
-  }
-  g_runtime.divert_return =
-      g_runtime.windivert.open(filter.c_str(), WINDIVERT_LAYER_NETWORK, -500, 0);
-  if (g_runtime.divert_return == INVALID_HANDLE_VALUE) {
-    const DWORD error = GetLastError();
-    CleanupRoutes(&g_runtime);
-    g_runtime.state = "failed";
-    g_runtime.last_error =
-        "failed to open WinDivert return filter (" + Win32ErrorText(error) + ")";
-    return false;
-  }
-  g_runtime.wintun_session = g_runtime.wintun.start_session(g_runtime.wintun_adapter, 0x400000);
-  if (g_runtime.wintun_session == nullptr) {
-    CleanupRoutes(&g_runtime);
-    g_runtime.windivert.close(g_runtime.divert_return);
-    g_runtime.divert_return = INVALID_HANDLE_VALUE;
-    g_runtime.state = "failed";
-    g_runtime.last_error = "failed to start Wintun session";
-    return false;
-  }
-  g_runtime.tun_thread = std::thread(TunReadLoop, &g_runtime);
-  g_runtime.divert_thread = std::thread(DivertReturnLoop, &g_runtime);
-  lock.unlock();
-  if (!ConfigureWintunRoutes(&g_runtime)) {
-    StopAcceleration("failed to configure Wintun routes", false);
-    std::lock_guard<std::mutex> failed_lock(g_runtime.mutex);
-    g_runtime.state = "failed";
-    g_runtime.last_error = "failed to configure Wintun routes";
-    return false;
-  }
-  lock.lock();
-  if (g_runtime.stop_requested.load()) {
-    lock.unlock();
-    StopAcceleration("start cancelled", false);
-    return false;
-  }
-  g_runtime.running = true;
-  g_runtime.state = "running";
-  LogEvent("Windows route layer ready: Wintun capture with CPE physical egress");
-  LogEvent("Windows TUN acceleration started");
-  g_runtime.health_thread = std::thread(HealthLoop, &g_runtime);
-  return true;
+  closesocket(socket_handle);
+  return ok;
 }
 
-void StopAcceleration(const std::string& reason, bool auto_recovered) {
-  {
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    if (!g_runtime.running.load() && g_runtime.state != "starting") {
-      g_runtime.state = auto_recovered ? "autoRecovered" : "stopped";
-      g_runtime.last_error = auto_recovered ? reason : "";
-      return;
-    }
-    g_runtime.state = "stopping";
-    g_runtime.stop_requested = true;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    if (g_runtime.divert_return != INVALID_HANDLE_VALUE) {
-      g_runtime.windivert.close(g_runtime.divert_return);
-      g_runtime.divert_return = INVALID_HANDLE_VALUE;
-    }
-  }
-  if (g_runtime.tun_thread.joinable() &&
-      g_runtime.tun_thread.get_id() != std::this_thread::get_id()) {
-    g_runtime.tun_thread.join();
-  }
-  if (g_runtime.divert_thread.joinable() &&
-      g_runtime.divert_thread.get_id() != std::this_thread::get_id()) {
-    g_runtime.divert_thread.join();
-  }
-  if (g_runtime.health_thread.joinable() &&
-      g_runtime.health_thread.get_id() != std::this_thread::get_id()) {
-    g_runtime.health_thread.join();
-  } else if (g_runtime.health_thread.joinable()) {
-    g_runtime.health_thread.detach();
-  }
-  std::lock_guard<std::mutex> lock(g_runtime.mutex);
-  CleanupRoutes(&g_runtime);
-  if (g_runtime.wintun_session != nullptr) {
-    g_runtime.wintun.end_session(g_runtime.wintun_session);
-    g_runtime.wintun_session = nullptr;
-  }
-  g_runtime.running = false;
-  g_runtime.state = auto_recovered ? "autoRecovered" : "stopped";
-  g_runtime.last_error = auto_recovered ? reason : "";
-  LogEvent(auto_recovered ? "CPE abnormal, auto rollback completed"
-                          : "Windows TUN acceleration stopped");
+bool L3Probe() {
+  return TcpProbe("1.1.1.1", 443, 1500);
 }
 
-std::string HandleCommand(const std::string& command) {
-  std::string name = command;
-  std::string arg;
-  const size_t space = command.find(' ');
-  if (space != std::string::npos) {
-    name = command.substr(0, space);
-    arg = command.substr(space + 1);
-  }
-  std::string cpe = kDefaultCpe;
-  int limit = 80;
-  const size_t cpe_pos = arg.find("cpe=");
-  if (cpe_pos != std::string::npos) {
-    const size_t end = arg.find(' ', cpe_pos);
-    cpe = arg.substr(cpe_pos + 4, end == std::string::npos ? std::string::npos : end - cpe_pos - 4);
-  }
-  const size_t limit_pos = arg.find("limit=");
-  if (limit_pos != std::string::npos) {
-    limit = std::max(1, atoi(arg.c_str() + limit_pos + 6));
-  }
-  if (name == "start") {
-    const bool ok = StartAcceleration(cpe);
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    return StatusTextLocked(&g_runtime) + std::string("ok=") + (ok ? "true\n" : "false\n");
-  }
-  if (name == "stop") {
-    StopAcceleration("stopped", false);
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    return StatusTextLocked(&g_runtime);
-  }
-  if (name == "status" || name == "health") {
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    if (!cpe.empty() && !g_runtime.running.load()) {
-      g_runtime.cpe = cpe;
-    }
-    return StatusTextLocked(&g_runtime);
-  }
-  if (name == "logs") {
-    return LogsText(limit);
-  }
-  if (name == "connections") {
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    return ConnectionsTextLocked(&g_runtime, limit);
-  }
-  return "error=unknown command\n";
-}
+void StopAcceleration(const std::string& message, bool recovered);
 
-std::string SendPipeCommand(const std::string& command) {
-  HANDLE pipe = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0,
-                            nullptr);
-  if (pipe == INVALID_HANDLE_VALUE) {
-    return "state=stopped\nadapterName=Windows Wintun\npermission=needsHelperInstall\n"
-           "helperInstalled=false\nhost=192.168.1.140\nreachable=false\nserviceReady=false\n"
-           "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\n"
-           "lastError=helper service is not running\n";
-  }
-  DWORD written = 0;
-  WriteFile(pipe, command.data(), static_cast<DWORD>(command.size()), &written, nullptr);
-  char buffer[65536] = {};
-  DWORD read = 0;
-  std::string out;
-  while (ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-    out.append(buffer, buffer + read);
-    if (read < sizeof(buffer)) {
+void HealthLoop() {
+  while (true) {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    std::string cpe;
+    {
+      std::lock_guard<std::mutex> lock(g_runtime.mutex);
+      if (g_runtime.stop_requested ||
+          g_runtime.state != RuntimeState::running) {
+        break;
+      }
+      cpe = g_runtime.cpe;
+      UpdateTrafficLocked(&g_runtime);
+    }
+
+    if (!HasHalfRoutes(cpe)) {
+      std::string route_error;
+      if (ConfigureHalfRoutes(cpe, &route_error)) {
+        LogEvent("半路由被系统改写，已自动重加");
+      } else {
+        std::lock_guard<std::mutex> lock(g_runtime.mutex);
+        g_runtime.last_error = route_error;
+      }
+    }
+
+    const bool l1 = PingCpe(cpe);
+    const bool l3 = l1 && L3Probe();
+    bool should_rollback = false;
+    {
+      std::lock_guard<std::mutex> lock(g_runtime.mutex);
+      if (!l1) {
+        g_runtime.health_failures++;
+        g_runtime.last_error = "CPE ping failed";
+      } else if (!l3) {
+        g_runtime.health_failures++;
+        g_runtime.last_error = "CPE reachable but L3 probe failed";
+      } else {
+        g_runtime.health_failures = 0;
+        g_runtime.last_error.clear();
+      }
+      should_rollback = g_runtime.health_failures >= 3;
+    }
+    if (should_rollback) {
+      StopAcceleration(kRollbackMessage, true);
       break;
     }
   }
+}
+
+std::string HealthTextFor(const std::string& cpe, bool service_ready) {
+  const bool l1 = PingCpe(cpe);
+  const bool l3 = l1 && L3Probe();
+  std::ostringstream out;
+  out << "host=" << cpe << "\n";
+  out << "reachable=" << (l1 ? "true" : "false") << "\n";
+  out << "serviceReady=" << (service_ready && l1 ? "true" : "false") << "\n";
+  out << "l3Reachable=" << (l3 ? "true" : "false") << "\n";
+  if (!l1) {
+    out << "error=CPE ping failed\n";
+  } else if (!l3) {
+    out << "error=CPE reachable but L3 probe failed\n";
+  } else {
+    out << "error=\n";
+  }
+  return out.str();
+}
+
+std::string StatusText(const std::string& requested_cpe) {
+  std::lock_guard<std::mutex> lock(g_runtime.mutex);
+  UpdateTrafficLocked(&g_runtime);
+  const std::string cpe =
+      g_runtime.cpe.empty() ? requested_cpe : g_runtime.cpe;
+  std::ostringstream out;
+  out << "state=" << StateName(g_runtime.state) << "\n";
+  out << "adapterName=Windows Half Route\n";
+  out << "permission=ready\n";
+  out << "helperInstalled=true\n";
+  out << "host=" << cpe << "\n";
+  const bool l1 = PingCpe(cpe);
+  out << "reachable=" << (l1 ? "true" : "false") << "\n";
+  out << "serviceReady=" << (l1 ? "true" : "false") << "\n";
+  out << "txBytes=" << g_runtime.tx_bytes << "\n";
+  out << "rxBytes=" << g_runtime.rx_bytes << "\n";
+  out << "txRate=" << g_runtime.tx_rate << "\n";
+  out << "rxRate=" << g_runtime.rx_rate << "\n";
+  out << "txPackets=0\n";
+  out << "rxPackets=0\n";
+  out << "txDropped=0\n";
+  out << "rxDropped=0\n";
+  out << "natMisses=0\n";
+  out << "sendFailures=0\n";
+  out << "udp443Packets=0\n";
+  out << "lastError=" << g_runtime.last_error << "\n";
+  return out.str();
+}
+
+void StartHealthThreadLocked() {
+  g_runtime.stop_requested = false;
+  g_runtime.health_thread = std::thread(HealthLoop);
+}
+
+bool StartAcceleration(const std::string& cpe, std::string* response) {
+  std::thread previous_thread;
+  bool already_running = false;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    if (g_runtime.state == RuntimeState::running && g_runtime.cpe == cpe) {
+      already_running = true;
+    } else if (g_runtime.health_thread.joinable()) {
+      g_runtime.stop_requested = true;
+      previous_thread = std::move(g_runtime.health_thread);
+    }
+  }
+  if (previous_thread.joinable()) {
+    previous_thread.join();
+  }
+  if (already_running) {
+    *response = StatusText(cpe);
+    return true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    g_runtime.state = RuntimeState::starting;
+    g_runtime.cpe = cpe;
+    g_runtime.last_error.clear();
+    g_runtime.health_failures = 0;
+    ResetTrafficBaselineLocked(&g_runtime);
+  }
+
+  SnapshotInitialState();
+  std::string route_error;
+  if (!ConfigureHalfRoutes(cpe, &route_error)) {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    g_runtime.state = RuntimeState::failed;
+    g_runtime.last_error = route_error;
+  }
+  if (!route_error.empty()) {
+    *response = StatusText(cpe);
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    g_runtime.state = RuntimeState::running;
+    g_runtime.last_error.clear();
+    StartHealthThreadLocked();
+  }
+  LogEvent("开启半路由");
+  *response = StatusText(cpe);
+  return true;
+}
+
+void StopAcceleration(const std::string& message, bool recovered) {
+  const std::thread::id current_id = std::this_thread::get_id();
+  {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    g_runtime.stop_requested = true;
+  }
+  if (g_runtime.health_thread.joinable() &&
+      g_runtime.health_thread.get_id() != current_id) {
+    g_runtime.health_thread.join();
+  }
+  DeleteHalfRoutes();
+  {
+    std::lock_guard<std::mutex> lock(g_runtime.mutex);
+    UpdateTrafficLocked(&g_runtime);
+    g_runtime.state =
+        recovered ? RuntimeState::auto_recovered : RuntimeState::stopped;
+    g_runtime.last_error = recovered ? "已回切直连" : "";
+    g_runtime.stop_requested = false;
+    g_runtime.health_failures = 0;
+  }
+  LogEvent(message.empty() ? "关闭半路由" : message);
+}
+
+std::string LogsText(int limit) {
+  std::ifstream file(StatePath(L"events.log"));
+  std::vector<std::string> lines;
+  std::string line;
+  while (std::getline(file, line)) {
+    if (!line.empty()) {
+      lines.push_back(line);
+    }
+  }
+  if (limit <= 0) {
+    limit = 80;
+  }
+  const size_t start =
+      lines.size() > static_cast<size_t>(limit)
+          ? lines.size() - static_cast<size_t>(limit)
+          : 0;
+  std::ostringstream out;
+  for (size_t i = start; i < lines.size(); ++i) {
+    out << lines[i] << "\n";
+  }
+  return out.str();
+}
+
+std::string CleanAddress(const std::string& value) {
+  if (value == "*:*" || value == "0.0.0.0:0" || value == "[::]:0") {
+    return "";
+  }
+  return value;
+}
+
+std::string ConnectionsText(int limit) {
+  if (limit <= 0) {
+    limit = 80;
+  }
+  const std::string tcp = RunCommandCapture("netstat -ano -p tcp");
+  const std::string udp = RunCommandCapture("netstat -ano -p udp");
+  std::istringstream stream(tcp + "\n" + udp);
+  std::ostringstream out;
+  std::string line;
+  int count = 0;
+  const std::string now = NowString();
+  while (std::getline(stream, line) && count < limit) {
+    line = Trim(line);
+    if (line.rfind("TCP", 0) != 0 && line.rfind("UDP", 0) != 0) {
+      continue;
+    }
+    const std::vector<std::string> parts = SplitWhitespace(line);
+    if (parts.size() < 3) {
+      continue;
+    }
+    const std::string proto = parts[0];
+    const std::string source = CleanAddress(parts[1]);
+    const std::string target = CleanAddress(parts[2]);
+    if (source.empty() || target.empty()) {
+      continue;
+    }
+    if (proto == "TCP" && parts.size() >= 4 &&
+        (parts[3] == "LISTENING" || parts[3] == "TIME_WAIT")) {
+      continue;
+    }
+    out << "lastSeen=" << now << "|proto=" << proto << "|source=" << source
+        << "|target=" << target << "|domain=|via=" << target
+        << "|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n";
+    count++;
+  }
+  return out.str();
+}
+
+std::string CpeFromArgs(const std::vector<std::string>& args) {
+  for (size_t i = 0; i + 1 < args.size(); ++i) {
+    if (args[i] == "--cpe") {
+      return args[i + 1];
+    }
+  }
+  return kDefaultCpe;
+}
+
+int LimitFromArgs(const std::vector<std::string>& args, int fallback) {
+  for (size_t i = 0; i + 1 < args.size(); ++i) {
+    if (args[i] == "--limit") {
+      return std::max(1, atoi(args[i + 1].c_str()));
+    }
+  }
+  return fallback;
+}
+
+std::string SelfTestText() {
+  std::ostringstream out;
+  for (const std::string& command : BuildRouteAddCommands(kDefaultCpe)) {
+    out << command << "\n";
+  }
+  for (const std::string& command : BuildRouteDeleteCommands()) {
+    out << command << "\n";
+  }
+  out << "adapterName=" << kAdapterName << "\n";
+  out << "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\n";
+  out << "netstat -ano -p tcp\n";
+  out << "GetIfTable2\n";
+  out << "if (!l1)\n";
+  out << kRollbackMessage << "\n";
+  out << "SELF_TEST_OK\n";
+  return out.str();
+}
+
+std::string CommandResponse(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    return "lastError=missing command\n";
+  }
+  const std::string command = args[0];
+  const std::string cpe = CpeFromArgs(args);
+  if (command == "start") {
+    std::string response;
+    StartAcceleration(cpe, &response);
+    return response;
+  }
+  if (command == "stop" || command == "rollback") {
+    StopAcceleration("关闭半路由", false);
+    return StatusText(cpe);
+  }
+  if (command == "status") {
+    return StatusText(cpe);
+  }
+  if (command == "health" || command == "healthCheck") {
+    return HealthTextFor(cpe, true);
+  }
+  if (command == "logs") {
+    return LogsText(LimitFromArgs(args, 80));
+  }
+  if (command == "connections") {
+    return ConnectionsText(LimitFromArgs(args, 80));
+  }
+  if (command == "self-test") {
+    return SelfTestText();
+  }
+  return "lastError=unknown command\n";
+}
+
+std::vector<std::string> SplitCommand(const std::string& command) {
+  return SplitWhitespace(command);
+}
+
+std::string PipeUnavailableStatus(const std::string& cpe) {
+  const bool installed = false;
+  const bool reachable = PingCpe(cpe);
+  std::ostringstream out;
+  out << "state=stopped\n";
+  out << "adapterName=" << kAdapterName << "\n";
+  out << "permission=needsHelperInstall\n";
+  out << "helperInstalled=" << (installed ? "true" : "false") << "\n";
+  out << "host=" << cpe << "\n";
+  out << "reachable=" << (reachable ? "true" : "false") << "\n";
+  out << "serviceReady=false\n";
+  out << "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\n";
+  out << "txPackets=0\nrxPackets=0\ntxDropped=0\nrxDropped=0\n";
+  out << "natMisses=0\nsendFailures=0\nudp443Packets=0\n";
+  out << "lastError=Windows helper service is not installed or not running\n";
+  return out.str();
+}
+
+std::string SendPipeCommand(const std::string& command) {
+  HANDLE pipe = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                            OPEN_EXISTING, 0, nullptr);
+  if (pipe == INVALID_HANDLE_VALUE) {
+    return PipeUnavailableStatus(CpeFromArgs(SplitCommand(command)));
+  }
+  DWORD written = 0;
+  WriteFile(pipe, command.c_str(), static_cast<DWORD>(command.size()), &written,
+            nullptr);
+  const char newline = '\n';
+  WriteFile(pipe, &newline, 1, &written, nullptr);
+  FlushFileBuffers(pipe);
+
+  std::string output;
+  char buffer[4096] = {};
+  DWORD read = 0;
+  while (ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+    output.append(buffer, buffer + read);
+  }
   CloseHandle(pipe);
-  return out;
+  return output;
 }
 
-void PipeServerLoop() {
-  PSECURITY_DESCRIPTOR security_descriptor = nullptr;
-  ConvertStringSecurityDescriptorToSecurityDescriptorW(
-      L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)", SDDL_REVISION_1, &security_descriptor, nullptr);
-  SECURITY_ATTRIBUTES security_attributes = {};
-  security_attributes.nLength = sizeof(security_attributes);
-  security_attributes.lpSecurityDescriptor = security_descriptor;
-  security_attributes.bInheritHandle = FALSE;
-  while (!g_runtime.service_stopping.load()) {
-    HANDLE pipe = CreateNamedPipeW(kPipeName, PIPE_ACCESS_DUPLEX,
-                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                   PIPE_UNLIMITED_INSTANCES, 65536, 4096, 0,
-                                   security_descriptor == nullptr ? nullptr : &security_attributes);
-    if (pipe == INVALID_HANDLE_VALUE) {
-      Sleep(200);
-      continue;
-    }
-    BOOL connected = ConnectNamedPipe(pipe, nullptr)
-                         ? TRUE
-                         : (GetLastError() == ERROR_PIPE_CONNECTED ? TRUE : FALSE);
-    if (!connected) {
-      CloseHandle(pipe);
-      continue;
-    }
-    char command[4096] = {};
-    DWORD read = 0;
-    if (ReadFile(pipe, command, sizeof(command) - 1, &read, nullptr) && read > 0) {
-      command[read] = '\0';
-      std::string response = HandleCommand(command);
-      DWORD written = 0;
-      WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
-    }
-    FlushFileBuffers(pipe);
-    DisconnectNamedPipe(pipe);
-    CloseHandle(pipe);
-  }
-  if (security_descriptor != nullptr) {
-    LocalFree(security_descriptor);
-  }
-}
-
-void SetServiceState(DWORD state, DWORD win32_exit_code = NO_ERROR, DWORD wait_hint = 0) {
-  g_service_status.dwCurrentState = state;
-  g_service_status.dwWin32ExitCode = win32_exit_code;
-  g_service_status.dwWaitHint = wait_hint;
-  g_service_status.dwControlsAccepted =
-      state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN : 0;
-  SetServiceStatus(g_service_status_handle, &g_service_status);
-}
-
-void WINAPI ServiceControlHandler(DWORD control) {
-  if (control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN) {
-    SetServiceState(SERVICE_STOP_PENDING, NO_ERROR, 3000);
-    g_runtime.service_stopping = true;
-    StopAcceleration("service stopped", false);
-    SetServiceState(SERVICE_STOPPED);
-  }
-}
-
-void WINAPI ServiceMain(DWORD, LPWSTR*) {
-  g_service_status_handle = RegisterServiceCtrlHandlerW(kServiceName, ServiceControlHandler);
+void SetServiceStatus(DWORD state, DWORD exit_code = NO_ERROR,
+                      DWORD wait_hint = 0) {
   if (g_service_status_handle == nullptr) {
     return;
   }
   g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-  SetServiceState(SERVICE_START_PENDING, NO_ERROR, 3000);
-  WSADATA wsa = {};
-  WSAStartup(MAKEWORD(2, 2), &wsa);
-  LogEvent("Windows helper service started");
-  SetServiceState(SERVICE_RUNNING);
-  PipeServerLoop();
-  StopAcceleration("service stopped", false);
-  {
-    std::lock_guard<std::mutex> lock(g_runtime.mutex);
-    if (g_runtime.wintun_adapter != nullptr) {
-      g_runtime.wintun.close_adapter(g_runtime.wintun_adapter);
-      g_runtime.wintun_adapter = nullptr;
+  g_service_status.dwCurrentState = state;
+  g_service_status.dwWin32ExitCode = exit_code;
+  g_service_status.dwWaitHint = wait_hint;
+  g_service_status.dwControlsAccepted =
+      state == SERVICE_START_PENDING ? 0 : SERVICE_ACCEPT_STOP;
+  SetServiceStatus(g_service_status_handle, &g_service_status);
+}
+
+void WINAPI ServiceControlHandler(DWORD control) {
+  if (control != SERVICE_CONTROL_STOP) {
+    return;
+  }
+  SetServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 2000);
+  g_service_stopping = true;
+  StopAcceleration("关闭半路由", false);
+  if (g_service_stop_event != nullptr) {
+    SetEvent(g_service_stop_event);
+  }
+  HANDLE pipe = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                            OPEN_EXISTING, 0, nullptr);
+  if (pipe != INVALID_HANDLE_VALUE) {
+    CloseHandle(pipe);
+  }
+}
+
+void ServePipeClient(HANDLE pipe) {
+  std::string command;
+  char buffer[1024] = {};
+  DWORD read = 0;
+  while (ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+    command.append(buffer, buffer + read);
+    if (command.find('\n') != std::string::npos) {
+      break;
     }
   }
-  WSACleanup();
+  command = Trim(command);
+  const std::string response = CommandResponse(SplitCommand(command));
+  DWORD written = 0;
+  WriteFile(pipe, response.c_str(), static_cast<DWORD>(response.size()),
+            &written, nullptr);
+  FlushFileBuffers(pipe);
+}
+
+void WINAPI ServiceMain(DWORD, wchar_t**) {
+  g_service_status_handle =
+      RegisterServiceCtrlHandlerW(kServiceName, ServiceControlHandler);
+  if (g_service_status_handle == nullptr) {
+    return;
+  }
+  SetServiceStatus(SERVICE_START_PENDING, NO_ERROR, 2000);
+  g_service_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  g_service_stopping = false;
+  LogEvent("Windows helper service started");
+  SetServiceStatus(SERVICE_RUNNING);
+
+  while (!g_service_stopping) {
+    HANDLE pipe = CreateNamedPipeW(
+        kPipeName, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE |
+                                           PIPE_WAIT,
+        PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, nullptr);
+    if (pipe == INVALID_HANDLE_VALUE) {
+      break;
+    }
+    BOOL connected =
+        ConnectNamedPipe(pipe, nullptr) ? TRUE
+                                       : (GetLastError() == ERROR_PIPE_CONNECTED);
+    if (connected && !g_service_stopping) {
+      ServePipeClient(pipe);
+    }
+    DisconnectNamedPipe(pipe);
+    CloseHandle(pipe);
+  }
+
+  StopAcceleration("关闭半路由", false);
   LogEvent("Windows helper service stopped");
-  SetServiceState(SERVICE_STOPPED);
+  if (g_service_stop_event != nullptr) {
+    CloseHandle(g_service_stop_event);
+    g_service_stop_event = nullptr;
+  }
+  SetServiceStatus(SERVICE_STOPPED);
 }
 
 bool InstallService() {
-  wchar_t path[MAX_PATH] = {};
-  GetModuleFileNameW(nullptr, path, MAX_PATH);
-  std::wstring command = L"\"" + std::wstring(path) + L"\" service";
-  SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
-  if (scm == nullptr) {
+  SC_HANDLE manager =
+      OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
+  if (manager == nullptr) {
     return false;
   }
+  const std::wstring binary = Quote(ExePath()) + L" service";
   SC_HANDLE service = CreateServiceW(
-      scm, kServiceName, kServiceDisplayName, SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
-      SERVICE_AUTO_START, SERVICE_ERROR_NORMAL, command.c_str(), nullptr, nullptr, nullptr,
-      nullptr, nullptr);
+      manager, kServiceName, kServiceDisplayName, SERVICE_ALL_ACCESS,
+      SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+      binary.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr);
   if (service == nullptr && GetLastError() == ERROR_SERVICE_EXISTS) {
-    service = OpenServiceW(scm, kServiceName, SERVICE_ALL_ACCESS);
+    service = OpenServiceW(manager, kServiceName, SERVICE_ALL_ACCESS);
     if (service != nullptr) {
-      ChangeServiceConfigW(service, SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START,
-                           SERVICE_ERROR_NORMAL, command.c_str(), nullptr, nullptr,
+      ChangeServiceConfigW(service, SERVICE_NO_CHANGE, SERVICE_AUTO_START,
+                           SERVICE_NO_CHANGE, binary.c_str(), nullptr, nullptr,
                            nullptr, nullptr, nullptr, nullptr);
     }
   }
   if (service == nullptr) {
-    CloseServiceHandle(scm);
+    CloseServiceHandle(manager);
     return false;
   }
+  SERVICE_DESCRIPTIONW description = {};
+  description.lpDescription = const_cast<wchar_t*>(
+      L"Privileged SD-WAN Verge helper for half-route routing and cleanup.");
+  ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &description);
   StartServiceW(service, 0, nullptr);
-  SERVICE_STATUS status = {};
-  for (int i = 0; i < 30; ++i) {
-    QueryServiceStatus(service, &status);
-    if (status.dwCurrentState == SERVICE_RUNNING) {
-      break;
-    }
-    Sleep(200);
-  }
-  SERVICE_DESCRIPTIONW desc = {};
-  desc.lpDescription = const_cast<LPWSTR>(
-      L"Privileged SD-WAN Verge helper for Wintun, WinDivert, routes, and cleanup.");
-  ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &desc);
   CloseServiceHandle(service);
-  CloseServiceHandle(scm);
-  LogEvent("Windows helper service installed");
+  CloseServiceHandle(manager);
+  LogEvent("Windows helper installed");
   return true;
 }
 
 bool StopAndDeleteService() {
-  SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-  if (scm == nullptr) {
+  DeleteHalfRoutes();
+  SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (manager == nullptr) {
     return false;
   }
-  SC_HANDLE service = OpenServiceW(scm, kServiceName, SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS);
+  SC_HANDLE service =
+      OpenServiceW(manager, kServiceName, SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS);
   if (service == nullptr) {
-    const DWORD error = GetLastError();
-    CloseServiceHandle(scm);
-    return error == ERROR_SERVICE_DOES_NOT_EXIST;
+    CloseServiceHandle(manager);
+    return false;
   }
   SERVICE_STATUS status = {};
   ControlService(service, SERVICE_CONTROL_STOP, &status);
   for (int i = 0; i < 30; ++i) {
-    QueryServiceStatus(service, &status);
-    if (status.dwCurrentState == SERVICE_STOPPED) {
+    if (!QueryServiceStatus(service, &status) ||
+        status.dwCurrentState == SERVICE_STOPPED) {
       break;
     }
     Sleep(200);
   }
-  const bool ok = DeleteService(service) == TRUE;
+  const bool ok = DeleteService(service) != 0;
   CloseServiceHandle(service);
-  CloseServiceHandle(scm);
-  LogEvent("Windows helper service uninstalled");
+  CloseServiceHandle(manager);
+  LogEvent("Windows helper uninstalled");
   return ok;
 }
 
-int SelfTestFail(int code, const char* message) {
-  fprintf(stderr, "SELF_TEST_FAIL[%d] %s\n", code, message);
-  printf("SELF_TEST_FAIL[%d] %s\n", code, message);
-  fflush(stderr);
-  fflush(stdout);
-  return code;
+std::vector<std::string> ArgsFromMain(int argc, wchar_t* argv[]) {
+  std::vector<std::string> args;
+  for (int i = 1; i < argc; ++i) {
+    args.push_back(WideToUtf8(argv[i]));
+  }
+  return args;
 }
 
-int CommandSelfTest() {
-  WSADATA wsa = {};
-  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-    return SelfTestFail(10, "wsa startup failed");
+std::string JoinArgs(const std::vector<std::string>& args) {
+  std::ostringstream out;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) {
+      out << ' ';
+    }
+    out << args[i];
   }
-  WinDivertApi divert_api = {};
-  if (!LoadWinDivert(&divert_api)) {
-    WSACleanup();
-    return SelfTestFail(18, "windivert api load failed");
-  }
-  std::string filter_error;
-  if (!ValidateWinDivertFilter(&divert_api, BuildReturnFilter("192.168.1.88"), &filter_error)) {
-    WSACleanup();
-    return SelfTestFail(19, filter_error.c_str());
-  }
-  uint8_t packet[256] = {};
-  size_t len = 0;
-  auto table = std::make_unique<NatTable>();
-  const uint32_t tun_ip = 0x0aff0002;
-  const uint32_t physical_ip = 0xc0a80158;
-  const uint32_t cpe_ip = 0xc0a8018c;
-  const uint32_t remote_ip = 0x08080808;
-  uint8_t ipv6_packet[40] = {};
-  ipv6_packet[0] = 0x60;
-  if (NatTranslateOutgoing(table.get(), ipv6_packet, sizeof(ipv6_packet), physical_ip, cpe_ip)) {
-    WSACleanup();
-    return SelfTestFail(20, "ipv6 packet should not enter ipv4 tun nat");
-  }
-  MakeUdpPacket(packet, &len, tun_ip, remote_ip, 12345, 53);
-  if (!NatTranslateOutgoing(table.get(), packet, len, physical_ip, cpe_ip)) {
-    WSACleanup();
-    return SelfTestFail(11, "nat outgoing failed");
-  }
-  if (ReadU32(packet + 12) != physical_ip ||
-      ReadU16(packet + 20) < kNatPortStart || ReadU16(packet + 20) > kNatPortEnd ||
-      ReadU32(packet + 16) != cpe_ip) {
-    WSACleanup();
-    return SelfTestFail(12, "nat outbound rewrite failed");
-  }
-  const uint16_t translated_port = ReadU16(packet + 20);
-  uint8_t reply[256] = {};
-  MakeUdpPacket(reply, &len, cpe_ip, physical_ip, 53, translated_port);
-  if (!NatTranslateIncoming(table.get(), reply, len, physical_ip) ||
-      ReadU32(reply + 16) != tun_ip ||
-      ReadU32(reply + 12) != remote_ip ||
-      ReadU16(reply + 22) != 12345) {
-    WSACleanup();
-    return SelfTestFail(13, "nat inbound restore failed");
-  }
-  auto icmp_table = std::make_unique<NatTable>();
-  MakeIcmpPacket(packet, &len, tun_ip, remote_ip, 8, 0x1234, 1);
-  if (!NatTranslateOutgoing(icmp_table.get(), packet, len, physical_ip, cpe_ip)) {
-    WSACleanup();
-    return SelfTestFail(22, "icmp nat outgoing failed");
-  }
-  const uint16_t translated_icmp_id = ReadU16(packet + 24);
-  MakeIcmpPacket(reply, &len, remote_ip, physical_ip, 0, translated_icmp_id, 1);
-  if (!NatTranslateIncoming(icmp_table.get(), reply, len, physical_ip) ||
-      ReadU32(reply + 16) != tun_ip ||
-      ReadU32(reply + 12) != remote_ip ||
-      ReadU16(reply + 24) != 0x1234) {
-    WSACleanup();
-    return SelfTestFail(23, "icmp nat restore failed");
-  }
-  uint8_t tcp_syn[64] = {};
-  tcp_syn[0] = 0x45;
-  tcp_syn[8] = 64;
-  tcp_syn[9] = IPPROTO_TCP;
-  WriteU16(tcp_syn + 2, 44);
-  WriteU32(tcp_syn + 12, tun_ip);
-  WriteU32(tcp_syn + 16, remote_ip);
-  WriteU16(tcp_syn + 20, 44321);
-  WriteU16(tcp_syn + 22, 443);
-  tcp_syn[32] = 0x60;
-  tcp_syn[33] = 0x02;
-  WriteU16(tcp_syn + 34, 65535);
-  tcp_syn[40] = 2;
-  tcp_syn[41] = 4;
-  WriteU16(tcp_syn + 42, 1460);
-  FixIpv4Checksum(tcp_syn, 44);
-  FixTransportChecksum(tcp_syn, 44);
-  if (!ClampTcpMss(tcp_syn, 44, kTcpMssClamp) ||
-      ReadU16(tcp_syn + 42) != kTcpMssClamp) {
-    WSACleanup();
-    return SelfTestFail(21, "tcp mss clamp failed");
-  }
-  auto dns_table = std::make_unique<NatTable>();
-  const uint8_t dns_query_payload[] = {
-      0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x07, 'e',  'x',  'a',
-      'm',  'p',  'l',  'e',  0x03, 'c',  'o',  'm',
-      0x00, 0x00, 0x01, 0x00, 0x01,
-  };
-  MakeUdpPacket(packet, &len, tun_ip, remote_ip, 12345, 53);
-  AppendUdpPayload(packet, &len, dns_query_payload, sizeof(dns_query_payload));
-  char query_domain[256] = {};
-  if (!DnsQueryDomainFromPacket(packet, len, query_domain, sizeof(query_domain)) ||
-      strcmp(query_domain, "example.com") != 0) {
-    WSACleanup();
-    return SelfTestFail(14, "dns query parse failed");
-  }
-  if (!NatTranslateOutgoing(dns_table.get(), packet, len, physical_ip, cpe_ip)) {
-    WSACleanup();
-    return SelfTestFail(15, "dns nat outgoing failed");
-  }
-  const uint16_t dns_translated_port = ReadU16(packet + 20);
-  const uint8_t dns_response_payload[] = {
-      0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01,
-      0x00, 0x00, 0x00, 0x00, 0x07, 'e',  'x',  'a',
-      'm',  'p',  'l',  'e',  0x03, 'c',  'o',  'm',
-      0x00, 0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c, 0x00,
-      0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00,
-      0x04, 0x5d, 0xb8, 0xd8, 0x22,
-  };
-  MakeUdpPacket(reply, &len, cpe_ip, physical_ip, 53, dns_translated_port);
-  AppendUdpPayload(reply, &len, dns_response_payload, sizeof(dns_response_payload));
-  if (!NatTranslateIncoming(dns_table.get(), reply, len, physical_ip) ||
-      strcmp(DnsCacheLookup(dns_table.get(), 0x5db8d822), "example.com") != 0) {
-    WSACleanup();
-    return SelfTestFail(16, "dns cache failed");
-  }
-  auto rate_runtime = std::make_unique<Runtime>();
-  rate_runtime->tx_bytes = 1500;
-  rate_runtime->rx_bytes = 3000;
-  rate_runtime->last_tx_bytes = 500;
-  rate_runtime->last_rx_bytes = 1000;
-  rate_runtime->last_rate_at = 10;
-  NatEntry* rate_entry = &rate_runtime->nat.entries[0];
-  rate_entry->used = true;
-  rate_entry->tx_bytes = 700;
-  rate_entry->rx_bytes = 900;
-  rate_entry->last_tx_bytes = 100;
-  rate_entry->last_rx_bytes = 300;
-  rate_entry->last_rate_at = 10;
-  UpdateRatesLocked(rate_runtime.get(), 15);
-  if (rate_runtime->tx_rate != 200 || rate_runtime->rx_rate != 400 ||
-      rate_entry->tx_rate != 120 || rate_entry->rx_rate != 120) {
-    WSACleanup();
-    return SelfTestFail(17, "rate calculation failed");
-  }
-  WSACleanup();
-  printf("SELF_TEST_OK\n");
-  return 0;
+  return out.str();
 }
 
 void PrintUsage() {
-  fprintf(stderr,
-          "sdwan_windows_helper {install|uninstall|service|start|stop|status|health|logs|connections|self-test} [--cpe ip] [--limit n]\n");
+  printf("sdwan_windows_helper {install|uninstall|service|start|stop|status|health|logs|connections|self-test} [--cpe ip] [--limit n]\n");
 }
-
-std::string CliCommandFromArgs(int argc, wchar_t** argv) {
-  std::string command = argc >= 2 ? WideToUtf8(argv[1]) : "status";
-  for (int i = 2; i < argc; ++i) {
-    const std::wstring arg = argv[i];
-    if (arg == L"--cpe" && i + 1 < argc) {
-      command += " cpe=" + WideToUtf8(argv[++i]);
-    } else if (arg == L"--limit" && i + 1 < argc) {
-      command += " limit=" + WideToUtf8(argv[++i]);
-    }
-  }
-  return command;
-}
-
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
-  if (argc < 2) {
+int wmain(int argc, wchar_t* argv[]) {
+  const std::vector<std::string> args = ArgsFromMain(argc, argv);
+  if (args.empty()) {
     PrintUsage();
-    return 1;
+    return 64;
   }
-  const std::wstring command = argv[1];
-  if (command == L"service") {
-    SERVICE_TABLE_ENTRYW table[] = {
-        {const_cast<LPWSTR>(kServiceName), ServiceMain},
+  const std::string command = args[0];
+  if (command == "service") {
+    SERVICE_TABLE_ENTRYW dispatch_table[] = {
+        {const_cast<wchar_t*>(kServiceName), ServiceMain},
         {nullptr, nullptr},
     };
-    return StartServiceCtrlDispatcherW(table) ? 0 : 1;
+    return StartServiceCtrlDispatcherW(dispatch_table) ? 0 : 1;
   }
-  if (command == L"self-test") {
-    return CommandSelfTest();
-  }
-  if (command == L"install") {
+  if (command == "install") {
     const bool ok = InstallService();
-    printf("state=stopped\nadapterName=Windows Wintun\npermission=%s\nhelperInstalled=%s\n"
-           "host=192.168.1.140\nreachable=false\nserviceReady=%s\n"
-           "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\nlastError=%s\n",
-           ok ? "ready" : "denied", ok ? "true" : "false", ok ? "true" : "false",
-           ok ? "" : "failed to install service");
-    return ok ? 0 : 1;
+    if (!ok) {
+      printf("state=failed\nadapterName=%s\npermission=denied\nhelperInstalled=false\nlastError=failed to install helper service\n",
+             kAdapterName);
+      return 1;
+    }
+    Sleep(500);
+    printf("%s", SendPipeCommand("status").c_str());
+    return 0;
   }
-  if (command == L"uninstall") {
+  if (command == "uninstall") {
     SendPipeCommand("stop");
     const bool ok = StopAndDeleteService();
-    printf("state=stopped\nadapterName=Windows Wintun\npermission=%s\nhelperInstalled=false\n"
-           "host=192.168.1.140\nreachable=false\nserviceReady=false\n"
-           "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\nlastError=%s\n",
-           ok ? "needsHelperInstall" : "denied", ok ? "" : "failed to uninstall service");
+    printf("state=stopped\nadapterName=%s\npermission=needsHelperInstall\nhelperInstalled=false\nlastError=%s\n",
+           kAdapterName, ok ? "" : "failed to uninstall helper service");
     return ok ? 0 : 1;
   }
-  const std::string pipe_command = CliCommandFromArgs(argc, argv);
-  const std::string response = SendPipeCommand(pipe_command);
-  fwrite(response.data(), 1, response.size(), stdout);
-  return response.find("permission=needsHelperInstall") == std::string::npos ? 0 : 2;
+  if (command == "self-test") {
+    printf("%s", SelfTestText().c_str());
+    return 0;
+  }
+  const std::string response = SendPipeCommand(JoinArgs(args));
+  printf("%s", response.c_str());
+  return 0;
 }

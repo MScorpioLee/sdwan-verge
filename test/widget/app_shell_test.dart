@@ -35,7 +35,7 @@ class FakeTunService implements TunService {
   bool launchAtLogin = false;
   final CpeHealth health;
   final List<TunEventLog> eventLogs = const [
-    TunEventLog(time: '2026-06-04 12:00:00', message: '开启 TUN'),
+    TunEventLog(time: '2026-06-04 12:00:00', message: '开启半路由'),
     TunEventLog(time: '2026-06-04 12:00:05', message: '自动回退'),
   ];
   List<TunConnection> get connectionLogs {
@@ -188,14 +188,14 @@ void main() {
     expect(find.text('下行速率'), findsWidgets);
     expect(find.text('开启加速'), findsOneWidget);
     // 旧文案不应再出现
-    expect(find.text('开启 TUN'), findsNothing);
+    expect(find.text('开启半路由'), findsNothing);
 
     // 日志页使用同一套侧边栏风格，只展示 helper 事件时间线。
     await tester.tap(find.text('日志'));
     await tester.pumpAndSettle();
     expect(find.text('事件日志'), findsOneWidget);
     expect(find.text('连接统计'), findsNothing);
-    expect(find.text('开启 TUN'), findsOneWidget);
+    expect(find.text('开启半路由'), findsOneWidget);
 
     // 连接统计独立成页，不混在事件日志里。
     await tester.tap(find.text('连接'));

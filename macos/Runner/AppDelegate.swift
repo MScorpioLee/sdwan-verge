@@ -216,7 +216,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
 
   private func unsupportedStatus(
     state: String = "stopped",
-    message: String = "macOS Packet Tunnel 后端尚未接入",
+    message: String = "macOS 半路由后端尚未接入",
     cpeHost: String? = nil
   ) -> [String: Any] {
     return [
@@ -232,7 +232,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "host": cpeHost ?? defaultCpeHost,
       "reachable": false,
       "serviceReady": false,
-      "error": "TUN 原生服务尚未接入",
+      "error": "半路由服务尚未接入",
     ]
   }
 
@@ -319,7 +319,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     var failed = status
     failed["state"] = "failed"
     if failed["lastError"] == nil {
-      failed["lastError"] = "TUN 未进入运行状态，请查看日志"
+        failed["lastError"] = "半路由未进入运行状态，请查看日志"
     }
     return failed
   }
@@ -349,7 +349,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     let state = pairs["state"] ?? fallbackState
     var status: [String: Any] = [
       "state": state,
-      "adapterName": pairs["adapterName"] ?? "IPv4 TUN 虚拟网卡",
+      "adapterName": pairs["adapterName"] ?? "macOS Half Route",
       "permission": pairs["permission"] ?? "needsHelperInstall",
       "helperInstalled": installedHelperReady(),
       "cpe": healthFromPairs(pairs),

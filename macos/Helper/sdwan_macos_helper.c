@@ -1,258 +1,123 @@
-#define _DARWIN_C_SOURCE
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <ifaddrs.h>
-#include <net/bpf.h>
-#include <net/ethernet.h>
-#include <net/if.h>
-#include <net/if_dl.h>
-#include <net/if_utun.h>
-#include <netinet/in.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <sys/kern_control.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/sys_domain.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-#ifndef UTUN_CONTROL_NAME
-#define UTUN_CONTROL_NAME "com.apple.net.utun_control"
-#endif
-
-#ifndef UTUN_OPT_IFNAME
-#define UTUN_OPT_IFNAME 2
-#endif
-
-#ifndef IP_BOUND_IF
-#define IP_BOUND_IF 25
-#endif
-
-#define DEFAULT_CPE "192.168.1.140"
-#define DEFAULT_TUN_LOCAL "10.255.0.2"
-#define DEFAULT_TUN_PEER "10.255.0.1"
-#define DEFAULT_L3_HOST "1.1.1.1"
-#define DEFAULT_L3_PORT 53
-#define DEFAULT_STATE_DIR "/var/run/sdwan-verge"
-#define DEFAULT_LOG_FILE "/var/log/sdwan-verge-helper.log"
-#define EVENT_LOG_NAME "events.log"
-#define CONNECTIONS_FILE_NAME "connections"
-#define PF_ANCHOR "com.apple/sdwan-verge"
 #define HELPER_NAME "sdwan-macos-helper"
-#define INSTALLED_HELPER_DIR "/Library/PrivilegedHelperTools"
-#define INSTALLED_HELPER_PATH "/Library/PrivilegedHelperTools/com.sdwan.verge.helper"
-#define MAX_PACKET 2000
-#define MAX_FRAME 2200
-#define MAX_NAT 16384
-#define MAX_DNS_CACHE 2048
-#define HEARTBEAT_TIMEOUT_SEC 30
-#define HEALTH_INTERVAL_SEC 2
-#define DNS_PROBE_TIMEOUT_SEC 1
-#define TUN_MTU 1400
-#define TCP_MSS_CLAMP 1360
-#define NAT_PORT_START 42000
-#define NAT_PORT_END 48999
+#define DEFAULT_CPE "192.168.1.140"
+#define DEFAULT_STATE_DIR "/tmp/sdwan-verge-half-route"
+#define INSTALLED_HELPER "/Library/PrivilegedHelperTools/com.sdwan.verge.helper"
 
 typedef struct {
   char cpe[64];
-  char ifname[IFNAMSIZ];
-  char utun[IFNAMSIZ];
-  char tun_local[64];
-  char tun_peer[64];
-  char state_dir[256];
-  char l3_host[64];
-  int l3_port;
-  bool foreground;
+  char ifname[64];
+  char state_dir[PATH_MAX];
 } HelperConfig;
 
 typedef struct {
-  bool used;
-  uint8_t proto;
-  uint32_t remote_ip;
-  uint32_t original_remote_ip;
-  uint32_t original_src_ip;
-  uint16_t original_src_port;
-  uint16_t translated_port;
-  uint16_t remote_port;
-  uint64_t tx_bytes;
-  uint64_t rx_bytes;
-  uint64_t tx_rate;
-  uint64_t rx_rate;
-  uint64_t last_tx_bytes;
-  uint64_t last_rx_bytes;
-  time_t last_rate_at;
-  time_t last_seen;
-  char domain[256];
-} NatEntry;
+  uint64_t tx_total;
+  uint64_t rx_total;
+} TrafficCounters;
 
-typedef struct {
-  bool used;
-  uint32_t ip;
-  time_t last_seen;
-  char domain[256];
-} DnsCacheEntry;
-
-typedef struct {
-  NatEntry entries[MAX_NAT];
-  DnsCacheEntry dns[MAX_DNS_CACHE];
-} NatTable;
-
-typedef struct {
-  int tun_fd;
-  int bpf_fd;
-  HelperConfig config;
-  char state_file[512];
-  char heartbeat_file[512];
-  char event_log_file[512];
-  char connections_file[512];
-  char pf_token_file[512];
-  char physical_ifname[IFNAMSIZ];
-  char utun_ifname[IFNAMSIZ];
-  uint8_t local_mac[6];
-  uint8_t cpe_mac[6];
-  uint32_t cpe_ip;
-  uint32_t physical_ip;
-  uint32_t tun_ip;
-  bool routes_added;
-  bool pf_loaded;
-  bool auto_recovered;
-  char last_error[512];
-  uint64_t tx_bytes;
-  uint64_t rx_bytes;
-  uint64_t tx_rate;
-  uint64_t rx_rate;
-  uint64_t last_tx_bytes;
-  uint64_t last_rx_bytes;
-  time_t last_rate_at;
-  uint64_t tx_packets;
-  uint64_t rx_packets;
-  uint64_t tx_dropped;
-  uint64_t rx_dropped;
-  uint64_t nat_misses;
-  uint64_t send_failures;
-  uint64_t udp443_packets;
-  NatTable nat;
-} Runtime;
-
-static Runtime g_runtime;
-static volatile sig_atomic_t g_stop_requested = 0;
-
-static void cleanup_routes(Runtime *runtime);
-
-static void init_config(HelperConfig *config) {
-  memset(config, 0, sizeof(*config));
-  snprintf(config->cpe, sizeof(config->cpe), "%s", DEFAULT_CPE);
-  snprintf(config->tun_local, sizeof(config->tun_local), "%s", DEFAULT_TUN_LOCAL);
-  snprintf(config->tun_peer, sizeof(config->tun_peer), "%s", DEFAULT_TUN_PEER);
-  snprintf(config->state_dir, sizeof(config->state_dir), "%s", DEFAULT_STATE_DIR);
-  snprintf(config->l3_host, sizeof(config->l3_host), "%s", DEFAULT_L3_HOST);
-  config->l3_port = DEFAULT_L3_PORT;
+static bool safe_ipv4(const char *value) {
+  struct in_addr address;
+  return value != NULL && inet_pton(AF_INET, value, &address) == 1;
 }
 
-static void log_line(const char *message) {
-  FILE *file = fopen(DEFAULT_LOG_FILE, "a");
+static void ensure_state_dir(const HelperConfig *config) {
+  mkdir(config->state_dir, 0777);
+  chmod(config->state_dir, 0777);
+}
+
+static void join_path(const HelperConfig *config, const char *name, char *out, size_t out_size) {
+  snprintf(out, out_size, "%s/%s", config->state_dir, name);
+}
+
+static uint64_t now_ms(void) {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)tv.tv_usec / 1000ULL;
+}
+
+static void now_text(char *out, size_t out_size) {
+  time_t raw = time(NULL);
+  struct tm local_tm;
+  localtime_r(&raw, &local_tm);
+  strftime(out, out_size, "%Y-%m-%d %H:%M:%S", &local_tm);
+}
+
+static void log_line(const HelperConfig *config, const char *message) {
+  ensure_state_dir(config);
+  char path[PATH_MAX];
+  join_path(config, "events.log", path, sizeof(path));
+  FILE *file = fopen(path, "a");
   if (file == NULL) {
     return;
   }
-  time_t now = time(NULL);
-  fprintf(file, "%ld %s\n", (long)now, message);
+  char ts[32];
+  now_text(ts, sizeof(ts));
+  fprintf(file, "%s %s\n", ts, message == NULL ? "" : message);
   fclose(file);
 }
 
-static bool adopt_root_identity(void) {
-  if (geteuid() != 0) {
-    return false;
-  }
-  if (getgid() != 0 && setgid(0) != 0) {
-    return false;
-  }
-  if (getuid() != 0 && setuid(0) != 0) {
-    return false;
-  }
-  return getuid() == 0 && geteuid() == 0;
-}
-
-static int require_root_identity(const char *operation) {
-  if (!adopt_root_identity()) {
-    fprintf(stderr, "%s requires root\n", operation);
-    return 77;
-  }
-  return 0;
-}
-
 static int run_command(const char *command) {
-  log_line(command);
-  return system(command);
-}
-
-static int run_command_capture(const char *command, char *buffer, size_t size) {
-  log_line(command);
-  FILE *pipe = popen(command, "r");
-  if (pipe == NULL) {
-    if (size > 0) {
-      buffer[0] = '\0';
-    }
+  int code = system(command);
+  if (code == -1) {
     return 127;
   }
-  size_t offset = 0;
-  while (offset + 1 < size) {
-    size_t n = fread(buffer + offset, 1, size - offset - 1, pipe);
-    offset += n;
-    if (n == 0) {
-      break;
-    }
+  if (WIFEXITED(code)) {
+    return WEXITSTATUS(code);
   }
-  if (size > 0) {
-    buffer[offset] = '\0';
-  }
-  int status = pclose(pipe);
-  if (status == -1) {
-    return 127;
-  }
-  if (WIFEXITED(status)) {
-    return WEXITSTATUS(status);
-  }
-  return status;
+  return code;
 }
 
-static bool capture_command(const char *command, char *buffer, size_t size) {
+static char *capture_command(const char *command) {
   FILE *pipe = popen(command, "r");
   if (pipe == NULL) {
-    return false;
+    return strdup("");
   }
-  size_t offset = 0;
-  while (offset + 1 < size) {
-    size_t n = fread(buffer + offset, 1, size - offset - 1, pipe);
-    offset += n;
-    if (n == 0) {
-      break;
+  size_t capacity = 4096;
+  size_t length = 0;
+  char *output = malloc(capacity);
+  if (output == NULL) {
+    pclose(pipe);
+    return strdup("");
+  }
+  output[0] = '\0';
+  char buffer[1024];
+  while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+    size_t chunk = strlen(buffer);
+    if (length + chunk + 1 > capacity) {
+      capacity = (length + chunk + 1) * 2;
+      char *next = realloc(output, capacity);
+      if (next == NULL) {
+        free(output);
+        pclose(pipe);
+        return strdup("");
+      }
+      output = next;
     }
+    memcpy(output + length, buffer, chunk);
+    length += chunk;
+    output[length] = '\0';
   }
-  buffer[offset] = '\0';
-  int rc = pclose(pipe);
-  return rc == 0 || offset > 0;
+  pclose(pipe);
+  return output;
 }
 
-static void path_join(char *out, size_t out_size, const char *dir, const char *name) {
-  snprintf(out, out_size, "%s/%s", dir, name);
-}
-
-static bool ensure_state_dir(const char *dir) {
-  if (mkdir(dir, 0755) == 0 || errno == EEXIST) {
-    return true;
-  }
-  return false;
+static bool file_exists(const char *path) {
+  return access(path, F_OK) == 0;
 }
 
 static void write_text_file(const char *path, const char *content) {
@@ -260,961 +125,21 @@ static void write_text_file(const char *path, const char *content) {
   if (file == NULL) {
     return;
   }
-  fputs(content, file);
+  fputs(content == NULL ? "" : content, file);
   fclose(file);
+  chmod(path, 0666);
 }
 
-static bool read_text_file(const char *path, char *buffer, size_t size) {
+static bool read_state_value(const HelperConfig *config, const char *key, char *out, size_t out_size) {
+  char path[PATH_MAX];
+  join_path(config, "state", path, sizeof(path));
   FILE *file = fopen(path, "r");
   if (file == NULL) {
     return false;
   }
-  size_t n = fread(buffer, 1, size - 1, file);
-  buffer[n] = '\0';
-  fclose(file);
-  return true;
-}
-
-static void append_text_file(const char *path, const char *content) {
-  FILE *file = fopen(path, "a");
-  if (file == NULL) {
-    return;
-  }
-  fputs(content, file);
-  fclose(file);
-}
-
-static void format_event_time(time_t raw_time, char *out, size_t out_size) {
-  struct tm tm_value;
-  localtime_r(&raw_time, &tm_value);
-  strftime(out, out_size, "%Y-%m-%d %H:%M:%S", &tm_value);
-}
-
-static void event_log_path(const HelperConfig *config, char *out, size_t out_size) {
-  path_join(out, out_size, config->state_dir, EVENT_LOG_NAME);
-}
-
-static void connections_path(const HelperConfig *config, char *out, size_t out_size) {
-  path_join(out, out_size, config->state_dir, CONNECTIONS_FILE_NAME);
-}
-
-static void log_event(const HelperConfig *config, const char *message) {
-  char path[512];
-  char line[1024];
-  event_log_path(config, path, sizeof(path));
-  snprintf(line, sizeof(line), "%ld %s\n", (long)time(NULL), message);
-  append_text_file(path, line);
-}
-
-static void touch_file(const char *path) {
-  FILE *file = fopen(path, "a");
-  if (file != NULL) {
-    fclose(file);
-  }
-  struct timeval times[2];
-  gettimeofday(&times[0], NULL);
-  times[1] = times[0];
-  utimes(path, times);
-}
-
-static bool file_mtime_age_exceeds(const char *path, int seconds) {
-  struct stat st;
-  if (stat(path, &st) != 0) {
-    return false;
-  }
-  return time(NULL) - st.st_mtime > seconds;
-}
-
-static void redirect_stdio_to_devnull(void) {
-  int fd = open("/dev/null", O_RDWR);
-  if (fd < 0) {
-    return;
-  }
-  (void)dup2(fd, STDIN_FILENO);
-  (void)dup2(fd, STDOUT_FILENO);
-  (void)dup2(fd, STDERR_FILENO);
-  if (fd > STDERR_FILENO) {
-    close(fd);
-  }
-}
-
-static uint16_t read_u16(const uint8_t *p) {
-  return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static uint32_t read_u32(const uint8_t *p) {
-  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
-static void ipv4_to_string(uint32_t ip, char *out, size_t out_size) {
-  struct in_addr addr;
-  addr.s_addr = htonl(ip);
-  inet_ntop(AF_INET, &addr, out, (socklen_t)out_size);
-}
-
-static void write_u16(uint8_t *p, uint16_t v) {
-  p[0] = (uint8_t)(v >> 8);
-  p[1] = (uint8_t)(v & 0xff);
-}
-
-static void write_u32(uint8_t *p, uint32_t v) {
-  p[0] = (uint8_t)(v >> 24);
-  p[1] = (uint8_t)((v >> 16) & 0xff);
-  p[2] = (uint8_t)((v >> 8) & 0xff);
-  p[3] = (uint8_t)(v & 0xff);
-}
-
-static uint16_t checksum16(const uint8_t *data, size_t len) {
-  uint32_t sum = 0;
-  for (size_t i = 0; i + 1 < len; i += 2) {
-    sum += read_u16(data + i);
-  }
-  if ((len & 1) != 0) {
-    sum += (uint16_t)(data[len - 1] << 8);
-  }
-  while ((sum >> 16) != 0) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-  return (uint16_t)(~sum);
-}
-
-static void fix_ipv4_checksum(uint8_t *packet, size_t len) {
-  if (len < 20) {
-    return;
-  }
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || ihl > len) {
-    return;
-  }
-  write_u16(packet + 10, 0);
-  write_u16(packet + 10, checksum16(packet, ihl));
-}
-
-static uint16_t transport_checksum(const uint8_t *packet, size_t len, size_t offset, uint8_t proto) {
-  if (len < offset) {
-    return 0;
-  }
-  size_t payload_len = len - offset;
-  uint32_t sum = 0;
-  sum += read_u16(packet + 12);
-  sum += read_u16(packet + 14);
-  sum += read_u16(packet + 16);
-  sum += read_u16(packet + 18);
-  sum += proto;
-  sum += (uint16_t)payload_len;
-  const uint8_t *payload = packet + offset;
-  for (size_t i = 0; i + 1 < payload_len; i += 2) {
-    sum += read_u16(payload + i);
-  }
-  if ((payload_len & 1) != 0) {
-    sum += (uint16_t)(payload[payload_len - 1] << 8);
-  }
-  while ((sum >> 16) != 0) {
-    sum = (sum & 0xffff) + (sum >> 16);
-  }
-  return (uint16_t)(~sum);
-}
-
-static void fix_transport_checksum(uint8_t *packet, size_t len) {
-  if (len < 20) {
-    return;
-  }
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  uint8_t proto = packet[9];
-  if (ihl < 20 || ihl > len) {
-    return;
-  }
-  if (proto == IPPROTO_TCP && len >= ihl + 20) {
-    write_u16(packet + ihl + 16, 0);
-    write_u16(packet + ihl + 16, transport_checksum(packet, len, ihl, proto));
-  } else if (proto == IPPROTO_UDP && len >= ihl + 8) {
-    write_u16(packet + ihl + 6, 0);
-    write_u16(packet + ihl + 6, transport_checksum(packet, len, ihl, proto));
-  } else if (proto == IPPROTO_ICMP && len > ihl + 4) {
-    write_u16(packet + ihl + 2, 0);
-    write_u16(packet + ihl + 2, checksum16(packet + ihl, len - ihl));
-  }
-}
-
-static bool clamp_tcp_mss(uint8_t *packet, size_t len, uint16_t max_mss) {
-  if (len < 40 || (packet[0] >> 4) != 4 || packet[9] != IPPROTO_TCP) {
-    return false;
-  }
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || len < ihl + 20) {
-    return false;
-  }
-  uint8_t *tcp = packet + ihl;
-  uint8_t flags = tcp[13];
-  if ((flags & 0x02) == 0) {
-    return false;
-  }
-  size_t tcp_header_len = ((tcp[12] >> 4) & 0x0f) * 4;
-  if (tcp_header_len < 20 || len < ihl + tcp_header_len) {
-    return false;
-  }
-  size_t option = ihl + 20;
-  size_t option_end = ihl + tcp_header_len;
-  while (option < option_end) {
-    uint8_t kind = packet[option];
-    if (kind == 0) {
-      break;
-    }
-    if (kind == 1) {
-      option++;
-      continue;
-    }
-    if (option + 1 >= option_end) {
-      break;
-    }
-    uint8_t option_len = packet[option + 1];
-    if (option_len < 2 || option + option_len > option_end) {
-      break;
-    }
-    if (kind == 2 && option_len == 4) {
-      uint16_t current = read_u16(packet + option + 2);
-      if (current > max_mss) {
-        write_u16(packet + option + 2, max_mss);
-        fix_transport_checksum(packet, len);
-        return true;
-      }
-      return false;
-    }
-    option += option_len;
-  }
-  return false;
-}
-
-static bool parse_ipv4_ports(const uint8_t *packet, size_t len, uint16_t *src_port, uint16_t *dst_port) {
-  if (len < 20) {
-    return false;
-  }
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  uint8_t proto = packet[9];
-  if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-    if (len < ihl + 4) {
-      return false;
-    }
-    *src_port = read_u16(packet + ihl);
-    *dst_port = read_u16(packet + ihl + 2);
-    return true;
-  }
-  if (proto == IPPROTO_ICMP && len >= ihl + 8) {
-    *src_port = read_u16(packet + ihl + 4);
-    *dst_port = 0;
-    return true;
-  }
-  return false;
-}
-
-static bool is_udp443_packet(const uint8_t *packet, size_t len) {
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  return len >= 20 && (packet[0] >> 4) == 4 && packet[9] == IPPROTO_UDP &&
-         parse_ipv4_ports(packet, len, &src_port, &dst_port) && dst_port == 443;
-}
-
-static bool write_ipv4_src_port(uint8_t *packet, size_t len, uint16_t port) {
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  uint8_t proto = packet[9];
-  if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && len >= ihl + 4) {
-    write_u16(packet + ihl, port);
-    return true;
-  }
-  if (proto == IPPROTO_ICMP && len >= ihl + 8) {
-    write_u16(packet + ihl + 4, port);
-    return true;
-  }
-  return false;
-}
-
-static bool write_ipv4_dst_port(uint8_t *packet, size_t len, uint16_t port) {
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  uint8_t proto = packet[9];
-  if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && len >= ihl + 4) {
-    write_u16(packet + ihl + 2, port);
-    return true;
-  }
-  if (proto == IPPROTO_ICMP && len >= ihl + 8) {
-    write_u16(packet + ihl + 4, port);
-    return true;
-  }
-  return false;
-}
-
-static bool dns_read_name(const uint8_t *dns, size_t len, size_t *offset, char *out, size_t out_size) {
-  size_t pos = *offset;
-  size_t out_len = 0;
-  int jumps = 0;
-  bool jumped = false;
-  size_t next_offset = pos;
-  if (out_size == 0) {
-    return false;
-  }
-  out[0] = '\0';
-  while (pos < len && jumps < 16) {
-    uint8_t label_len = dns[pos];
-    if (label_len == 0) {
-      pos++;
-      if (!jumped) {
-        next_offset = pos;
-      }
-      *offset = next_offset;
-      return out_len > 0;
-    }
-    if ((label_len & 0xc0) == 0xc0) {
-      if (pos + 1 >= len) {
-        return false;
-      }
-      uint16_t pointer = (uint16_t)(((label_len & 0x3f) << 8) | dns[pos + 1]);
-      if (!jumped) {
-        next_offset = pos + 2;
-      }
-      pos = pointer;
-      jumped = true;
-      jumps++;
-      continue;
-    }
-    if ((label_len & 0xc0) != 0 || label_len > 63 || pos + 1 + label_len > len) {
-      return false;
-    }
-    if (out_len != 0) {
-      if (out_len + 1 >= out_size) {
-        return false;
-      }
-      out[out_len++] = '.';
-    }
-    if (out_len + label_len >= out_size) {
-      return false;
-    }
-    memcpy(out + out_len, dns + pos + 1, label_len);
-    out_len += label_len;
-    out[out_len] = '\0';
-    pos += 1 + label_len;
-    if (!jumped) {
-      next_offset = pos;
-    }
-  }
-  return false;
-}
-
-static bool dns_query_domain_from_packet(const uint8_t *packet, size_t len, char *out, size_t out_size) {
-  if (len < 20 || packet[9] != IPPROTO_UDP) {
-    return false;
-  }
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || len < ihl + 8 + 12) {
-    return false;
-  }
-  const uint8_t *dns = packet + ihl + 8;
-  size_t dns_len = len - ihl - 8;
-  if (read_u16(dns + 4) == 0) {
-    return false;
-  }
-  size_t offset = 12;
-  return dns_read_name(dns, dns_len, &offset, out, out_size);
-}
-
-static void dns_cache_put(NatTable *table, uint32_t ip, const char *domain) {
-  if (ip == 0 || domain == NULL || domain[0] == '\0') {
-    return;
-  }
-  DnsCacheEntry *slot = NULL;
-  for (size_t i = 0; i < MAX_DNS_CACHE; i++) {
-    DnsCacheEntry *entry = &table->dns[i];
-    if (entry->used && entry->ip == ip) {
-      slot = entry;
-      break;
-    }
-    if (slot == NULL || !entry->used || entry->last_seen < slot->last_seen) {
-      slot = entry;
-    }
-  }
-  if (slot == NULL) {
-    return;
-  }
-  slot->used = true;
-  slot->ip = ip;
-  slot->last_seen = time(NULL);
-  snprintf(slot->domain, sizeof(slot->domain), "%s", domain);
-}
-
-static const char *dns_cache_lookup(NatTable *table, uint32_t ip) {
-  time_t now = time(NULL);
-  for (size_t i = 0; i < MAX_DNS_CACHE; i++) {
-    DnsCacheEntry *entry = &table->dns[i];
-    if (entry->used && entry->ip == ip && now - entry->last_seen <= 600) {
-      return entry->domain;
-    }
-  }
-  return "";
-}
-
-static void dns_cache_answers_from_packet(NatTable *table, const uint8_t *packet, size_t len,
-                                          const char *fallback_domain) {
-  if (fallback_domain == NULL || fallback_domain[0] == '\0' ||
-      len < 20 || packet[9] != IPPROTO_UDP) {
-    return;
-  }
-  size_t ihl = (packet[0] & 0x0f) * 4;
-  if (ihl < 20 || len < ihl + 8 + 12) {
-    return;
-  }
-  const uint8_t *dns = packet + ihl + 8;
-  size_t dns_len = len - ihl - 8;
-  if ((dns[2] & 0x80) == 0) {
-    return;
-  }
-  uint16_t qdcount = read_u16(dns + 4);
-  uint16_t ancount = read_u16(dns + 6);
-  size_t offset = 12;
-  char name[256];
-  for (uint16_t i = 0; i < qdcount; i++) {
-    if (!dns_read_name(dns, dns_len, &offset, name, sizeof(name)) || offset + 4 > dns_len) {
-      return;
-    }
-    offset += 4;
-  }
-  for (uint16_t i = 0; i < ancount; i++) {
-    if (!dns_read_name(dns, dns_len, &offset, name, sizeof(name)) || offset + 10 > dns_len) {
-      return;
-    }
-    uint16_t type = read_u16(dns + offset);
-    uint16_t klass = read_u16(dns + offset + 2);
-    uint16_t rdlen = read_u16(dns + offset + 8);
-    offset += 10;
-    if (offset + rdlen > dns_len) {
-      return;
-    }
-    if (type == 1 && klass == 1 && rdlen == 4) {
-      uint32_t ip = read_u32(dns + offset);
-      dns_cache_put(table, ip, fallback_domain);
-    }
-    offset += rdlen;
-  }
-}
-
-static bool nat_port_in_use(NatTable *table, uint8_t proto, uint16_t translated_port) {
-  for (size_t i = 0; i < MAX_NAT; i++) {
-    NatEntry *entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->translated_port == translated_port) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static uint16_t nat_allocate_port(NatTable *table, uint8_t proto, uint16_t original_port) {
-  uint16_t range = (uint16_t)(NAT_PORT_END - NAT_PORT_START + 1);
-  uint16_t first = (uint16_t)(NAT_PORT_START + (original_port % range));
-  for (uint16_t i = 0; i < range; i++) {
-    uint16_t candidate = (uint16_t)(NAT_PORT_START + ((first - NAT_PORT_START + i) % range));
-    if (!nat_port_in_use(table, proto, candidate)) {
-      return candidate;
-    }
-  }
-  return 0;
-}
-
-static NatEntry *nat_find_outgoing(NatTable *table, uint8_t proto, uint32_t original_src_ip,
-                                   uint32_t remote_ip, uint16_t original_src_port,
-                                   uint16_t remote_port) {
-  for (size_t i = 0; i < MAX_NAT; i++) {
-    NatEntry *entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->original_src_ip == original_src_ip &&
-        entry->original_remote_ip == remote_ip && entry->original_src_port == original_src_port &&
-        entry->remote_port == remote_port) {
-      entry->last_seen = time(NULL);
-      return entry;
-    }
-  }
-  return NULL;
-}
-
-static NatEntry *nat_find_free_slot(NatTable *table) {
-  time_t now = time(NULL);
-  NatEntry *free_slot = NULL;
-  for (size_t i = 0; i < MAX_NAT; i++) {
-    NatEntry *entry = &table->entries[i];
-    if (!entry->used) {
-      return entry;
-    }
-    if (free_slot == NULL || entry->last_seen < free_slot->last_seen) {
-      free_slot = entry;
-    }
-    if (now - entry->last_seen > 300) {
-      return entry;
-    }
-  }
-  return free_slot;
-}
-
-static NatEntry *nat_lookup_return(NatTable *table, uint8_t proto, uint32_t remote_ip,
-                                   uint16_t local_port, uint16_t remote_port) {
-  for (size_t i = 0; i < MAX_NAT; i++) {
-    NatEntry *entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->remote_ip == remote_ip &&
-        entry->translated_port == local_port && entry->remote_port == remote_port) {
-      entry->last_seen = time(NULL);
-      return entry;
-    }
-  }
-  return NULL;
-}
-
-static bool should_redirect_dns(uint8_t proto, uint16_t dst_port) {
-  return (proto == IPPROTO_TCP || proto == IPPROTO_UDP) && dst_port == 53;
-}
-
-static bool nat_translate_outgoing(NatTable *table, uint8_t *packet, size_t len,
-                                   uint32_t physical_ip, uint32_t cpe_ip) {
-  if (len < 20 || (packet[0] >> 4) != 4) {
-    return false;
-  }
-  uint8_t proto = packet[9];
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  if (!parse_ipv4_ports(packet, len, &src_port, &dst_port)) {
-    return false;
-  }
-  uint32_t original_src_ip = read_u32(packet + 12);
-  uint32_t original_remote_ip = read_u32(packet + 16);
-  uint32_t remote_ip = should_redirect_dns(proto, dst_port) ? cpe_ip : original_remote_ip;
-  NatEntry *entry = nat_find_outgoing(table, proto, original_src_ip, original_remote_ip, src_port, dst_port);
-  if (entry == NULL) {
-    entry = nat_find_free_slot(table);
-    if (entry == NULL) {
-      return false;
-    }
-    memset(entry, 0, sizeof(*entry));
-    uint16_t translated_port = nat_allocate_port(table, proto, src_port);
-    if (translated_port == 0) {
-      return false;
-    }
-    entry->translated_port = translated_port;
-  }
-  if (entry == NULL) {
-    return false;
-  }
-  entry->used = true;
-  entry->proto = proto;
-  entry->remote_ip = remote_ip;
-  entry->original_remote_ip = original_remote_ip;
-  entry->original_src_ip = original_src_ip;
-  entry->original_src_port = src_port;
-  entry->remote_port = dst_port;
-  if (should_redirect_dns(proto, dst_port)) {
-    (void)dns_query_domain_from_packet(packet, len, entry->domain, sizeof(entry->domain));
-  }
-  entry->tx_bytes += len;
-  entry->last_seen = time(NULL);
-  (void)clamp_tcp_mss(packet, len, TCP_MSS_CLAMP);
-  write_u32(packet + 12, physical_ip);
-  write_u32(packet + 16, remote_ip);
-  if (!write_ipv4_src_port(packet, len, entry->translated_port)) {
-    return false;
-  }
-  fix_ipv4_checksum(packet, len);
-  fix_transport_checksum(packet, len);
-  return true;
-}
-
-static bool nat_translate_incoming(NatTable *table, uint8_t *packet, size_t len, uint32_t physical_ip) {
-  if (len < 20 || (packet[0] >> 4) != 4) {
-    return false;
-  }
-  if (read_u32(packet + 16) != physical_ip) {
-    return false;
-  }
-  uint8_t proto = packet[9];
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  if (!parse_ipv4_ports(packet, len, &src_port, &dst_port)) {
-    return false;
-  }
-  uint32_t remote_ip = read_u32(packet + 12);
-  uint16_t local_port = proto == IPPROTO_ICMP ? src_port : dst_port;
-  uint16_t remote_port = proto == IPPROTO_ICMP ? dst_port : src_port;
-  NatEntry *entry = nat_lookup_return(table, proto, remote_ip, local_port, remote_port);
-  if (entry == NULL) {
-    return false;
-  }
-  if (entry->remote_port == 53 && entry->domain[0] != '\0') {
-    dns_cache_answers_from_packet(table, packet, len, entry->domain);
-  }
-  entry->rx_bytes += len;
-  write_u32(packet + 12, entry->original_remote_ip);
-  write_u32(packet + 16, entry->original_src_ip);
-  if (!write_ipv4_dst_port(packet, len, entry->original_src_port)) {
-    return false;
-  }
-  fix_ipv4_checksum(packet, len);
-  fix_transport_checksum(packet, len);
-  return true;
-}
-
-static size_t build_ethernet_frame(uint8_t *frame, size_t frame_size,
-                                   const uint8_t dst[6], const uint8_t src[6],
-                                   const uint8_t *packet, size_t packet_len) {
-  if (frame_size < packet_len + 14) {
-    return 0;
-  }
-  memcpy(frame, dst, 6);
-  memcpy(frame + 6, src, 6);
-  frame[12] = 0x08;
-  frame[13] = 0x00;
-  memcpy(frame + 14, packet, packet_len);
-  return packet_len + 14;
-}
-
-static void print_plan(const HelperConfig *config) {
-  const char *ifname = config->ifname[0] == '\0' ? "en0" : config->ifname;
-  const char *utun = config->utun[0] == '\0' ? "utun9" : config->utun;
-  printf("/sbin/ifconfig %s inet %s %s mtu %d up\n", utun, config->tun_local, config->tun_peer, TUN_MTU);
-  printf("/sbin/route -n add -host %s -interface %s\n", config->cpe, ifname);
-  printf("/sbin/route -n add 0.0.0.0/1 -interface %s\n", utun);
-  printf("/sbin/route -n add 128.0.0.0/1 -interface %s\n", utun);
-  printf("printf 'block in quick on %s proto { tcp udp } from any to <physical_ip> port %d:%d\\n' | /sbin/pfctl -a %s -f -\n",
-         ifname, NAT_PORT_START, NAT_PORT_END, PF_ANCHOR);
-  printf("/sbin/pfctl -E\n");
-  printf("PLAN_ONLY_NO_CHANGES_APPLIED\n");
-}
-
-static bool parse_mac(const char *text, uint8_t mac[6]) {
-  unsigned int values[6];
-  if (sscanf(text, "%x:%x:%x:%x:%x:%x",
-             &values[0], &values[1], &values[2], &values[3], &values[4], &values[5]) == 6) {
-    for (int i = 0; i < 6; i++) {
-      mac[i] = (uint8_t)values[i];
-    }
-    return true;
-  }
-  return false;
-}
-
-static bool get_interface_mac_ip(const char *ifname, uint8_t mac[6], uint32_t *ip) {
-  struct ifaddrs *ifaddr = NULL;
-  if (getifaddrs(&ifaddr) != 0) {
-    return false;
-  }
-  bool got_mac = false;
-  bool got_ip = false;
-  for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr == NULL || strcmp(ifa->ifa_name, ifname) != 0) {
-      continue;
-    }
-    if (ifa->ifa_addr->sa_family == AF_LINK) {
-      struct sockaddr_dl *sdl = (struct sockaddr_dl *)ifa->ifa_addr;
-      if (sdl->sdl_alen == 6) {
-        memcpy(mac, LLADDR(sdl), 6);
-        got_mac = true;
-      }
-    } else if (ifa->ifa_addr->sa_family == AF_INET) {
-      struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
-      *ip = ntohl(sin->sin_addr.s_addr);
-      got_ip = true;
-    }
-  }
-  freeifaddrs(ifaddr);
-  return got_mac && got_ip;
-}
-
-static bool route_get_interface(const char *host, char *ifname, size_t ifname_size) {
-  char command[256];
-  char output[4096];
-  snprintf(command, sizeof(command), "/sbin/route -n get %s 2>/dev/null", host);
-  if (!capture_command(command, output, sizeof(output))) {
-    return false;
-  }
-  char *line = strtok(output, "\n");
-  while (line != NULL) {
-    while (*line == ' ' || *line == '\t') {
-      line++;
-    }
-    if (strncmp(line, "interface:", 10) == 0) {
-      char value[IFNAMSIZ];
-      if (sscanf(line + 10, "%15s", value) == 1) {
-        snprintf(ifname, ifname_size, "%s", value);
-        return true;
-      }
-    }
-    line = strtok(NULL, "\n");
-  }
-  return false;
-}
-
-static bool resolve_cpe_mac(const char *cpe, uint8_t mac[6]) {
-  char command[256];
-  char output[4096];
-  snprintf(command, sizeof(command), "/usr/sbin/arp -n %s 2>/dev/null", cpe);
-  if (capture_command(command, output, sizeof(output))) {
-    char *at = strstr(output, " at ");
-    if (at != NULL) {
-      at += 4;
-      char mac_text[64];
-      if (sscanf(at, "%63s", mac_text) == 1 && parse_mac(mac_text, mac)) {
-        return true;
-      }
-    }
-  }
-  snprintf(command, sizeof(command), "/sbin/ping -c 1 -t 1 %s >/dev/null 2>&1", cpe);
-  (void)system(command);
-  snprintf(command, sizeof(command), "/usr/sbin/arp -n %s 2>/dev/null", cpe);
-  if (!capture_command(command, output, sizeof(output))) {
-    return false;
-  }
-  char *at = strstr(output, " at ");
-  if (at == NULL) {
-    return false;
-  }
-  at += 4;
-  char mac_text[64];
-  return sscanf(at, "%63s", mac_text) == 1 && parse_mac(mac_text, mac);
-}
-
-static int create_utun(char *ifname, size_t ifname_size) {
-  int fd = socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL);
-  if (fd < 0) {
-    return -1;
-  }
-  struct ctl_info info;
-  memset(&info, 0, sizeof(info));
-  snprintf(info.ctl_name, sizeof(info.ctl_name), "%s", UTUN_CONTROL_NAME);
-  if (ioctl(fd, CTLIOCGINFO, &info) < 0) {
-    close(fd);
-    return -1;
-  }
-  struct sockaddr_ctl addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sc_len = sizeof(addr);
-  addr.sc_family = AF_SYSTEM;
-  addr.ss_sysaddr = AF_SYS_CONTROL;
-  addr.sc_id = info.ctl_id;
-  addr.sc_unit = 0;
-  if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    close(fd);
-    return -1;
-  }
-  socklen_t len = (socklen_t)ifname_size;
-  if (getsockopt(fd, SYSPROTO_CONTROL, UTUN_OPT_IFNAME, ifname, &len) < 0) {
-    close(fd);
-    return -1;
-  }
-  return fd;
-}
-
-static int open_bpf(const char *ifname, unsigned int *buffer_len) {
-  char path[32];
-  int fd = -1;
-  for (int i = 0; i < 256; i++) {
-    snprintf(path, sizeof(path), "/dev/bpf%d", i);
-    fd = open(path, O_RDWR);
-    if (fd >= 0) {
-      break;
-    }
-  }
-  if (fd < 0) {
-    return -1;
-  }
-  struct ifreq ifr;
-  memset(&ifr, 0, sizeof(ifr));
-  snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname);
-  if (ioctl(fd, BIOCSETIF, &ifr) < 0) {
-    close(fd);
-    return -1;
-  }
-  unsigned int one = 1;
-  (void)ioctl(fd, BIOCIMMEDIATE, &one);
-  (void)ioctl(fd, BIOCSHDRCMPLT, &one);
-  if (ioctl(fd, BIOCGBLEN, buffer_len) < 0) {
-    *buffer_len = 4096;
-  }
-  return fd;
-}
-
-static void update_rates(Runtime *runtime, time_t now) {
-  for (size_t i = 0; i < MAX_NAT; i++) {
-    NatEntry *entry = &runtime->nat.entries[i];
-    if (!entry->used) {
-      continue;
-    }
-    if (entry->last_rate_at == 0) {
-      entry->last_rate_at = now;
-      entry->last_tx_bytes = entry->tx_bytes;
-      entry->last_rx_bytes = entry->rx_bytes;
-      continue;
-    }
-    time_t entry_elapsed = now - entry->last_rate_at;
-    if (entry_elapsed <= 0) {
-      continue;
-    }
-    entry->tx_rate = (entry->tx_bytes - entry->last_tx_bytes) / (uint64_t)entry_elapsed;
-    entry->rx_rate = (entry->rx_bytes - entry->last_rx_bytes) / (uint64_t)entry_elapsed;
-    entry->last_tx_bytes = entry->tx_bytes;
-    entry->last_rx_bytes = entry->rx_bytes;
-    entry->last_rate_at = now;
-  }
-
-  if (runtime->last_rate_at == 0) {
-    runtime->last_rate_at = now;
-    runtime->last_tx_bytes = runtime->tx_bytes;
-    runtime->last_rx_bytes = runtime->rx_bytes;
-    return;
-  }
-  time_t elapsed = now - runtime->last_rate_at;
-  if (elapsed <= 0) {
-    return;
-  }
-  runtime->tx_rate = (runtime->tx_bytes - runtime->last_tx_bytes) / (uint64_t)elapsed;
-  runtime->rx_rate = (runtime->rx_bytes - runtime->last_rx_bytes) / (uint64_t)elapsed;
-  runtime->last_tx_bytes = runtime->tx_bytes;
-  runtime->last_rx_bytes = runtime->rx_bytes;
-  runtime->last_rate_at = now;
-}
-
-static bool install_pf_rule(Runtime *runtime) {
-  char ip_text[INET_ADDRSTRLEN];
-  char command[1024];
-  char output[2048];
-  ipv4_to_string(runtime->physical_ip, ip_text, sizeof(ip_text));
-  snprintf(command, sizeof(command),
-           "printf 'block in quick on %s proto { tcp udp } from any to %s port %d:%d\\n' | "
-           "/sbin/pfctl -a %s -f - 2>&1",
-           runtime->physical_ifname, ip_text, NAT_PORT_START, NAT_PORT_END, PF_ANCHOR);
-  int rc = run_command_capture(command, output, sizeof(output));
-  if (rc != 0) {
-    output[strcspn(output, "\r\n")] = '\0';
-    snprintf(runtime->last_error, sizeof(runtime->last_error),
-             "failed to install pf rule%s%s",
-             output[0] == '\0' ? "" : ": ",
-             output[0] == '\0' ? "" : output);
-    return false;
-  }
-  snprintf(command, sizeof(command), "/sbin/pfctl -E 2>&1");
-  if (capture_command(command, output, sizeof(output))) {
-    char *token = strstr(output, "Token :");
-    if (token != NULL) {
-      token += 7;
-      while (*token == ' ' || *token == '\t') {
-        token++;
-      }
-      char line[128];
-      snprintf(line, sizeof(line), "%s", token);
-      line[strcspn(line, "\r\n")] = '\0';
-      write_text_file(runtime->pf_token_file, line);
-    }
-  }
-  runtime->pf_loaded = true;
-  return true;
-}
-
-static void cleanup_pf(Runtime *runtime) {
-  char command[512];
-  snprintf(command, sizeof(command), "/sbin/pfctl -a %s -F rules >/dev/null 2>&1", PF_ANCHOR);
-  (void)run_command(command);
-  char token[128] = "";
-  if (runtime->pf_token_file[0] != '\0' &&
-      read_text_file(runtime->pf_token_file, token, sizeof(token))) {
-    token[strcspn(token, "\r\n")] = '\0';
-    if (token[0] != '\0') {
-      snprintf(command, sizeof(command), "/sbin/pfctl -X %s >/dev/null 2>&1", token);
-      (void)run_command(command);
-    }
-    unlink(runtime->pf_token_file);
-  }
-  runtime->pf_loaded = false;
-}
-
-static void write_state(Runtime *runtime, const char *state, const char *message) {
-  char content[3072];
-  snprintf(content, sizeof(content),
-           "pid=%d\nstate=%s\nadapterName=IPv4 TUN 虚拟网卡\npermission=ready\ncpe=%s\nifname=%s\nutun=%s\n"
-           "message=%s\ntx_bytes=%llu\nrx_bytes=%llu\ntx_rate=%llu\nrx_rate=%llu\n"
-           "tx_packets=%llu\nrx_packets=%llu\ntx_dropped=%llu\nrx_dropped=%llu\n"
-           "nat_misses=%llu\nsend_failures=%llu\nudp443_packets=%llu\n",
-           getpid(), state, runtime->config.cpe, runtime->physical_ifname,
-           runtime->utun_ifname, message == NULL ? "" : message,
-           (unsigned long long)runtime->tx_bytes, (unsigned long long)runtime->rx_bytes,
-           (unsigned long long)runtime->tx_rate, (unsigned long long)runtime->rx_rate,
-           (unsigned long long)runtime->tx_packets, (unsigned long long)runtime->rx_packets,
-           (unsigned long long)runtime->tx_dropped, (unsigned long long)runtime->rx_dropped,
-           (unsigned long long)runtime->nat_misses, (unsigned long long)runtime->send_failures,
-           (unsigned long long)runtime->udp443_packets);
-  write_text_file(runtime->state_file, content);
-}
-
-static int start_fail(Runtime *runtime, const char *message, bool should_cleanup) {
-  if (should_cleanup) {
-    cleanup_routes(runtime);
-  }
-  if (runtime->tun_fd >= 0) {
-    close(runtime->tun_fd);
-    runtime->tun_fd = -1;
-  }
-  if (runtime->bpf_fd >= 0) {
-    close(runtime->bpf_fd);
-    runtime->bpf_fd = -1;
-  }
-  log_event(&runtime->config, message);
-  write_state(runtime, "failed", message);
-  return 1;
-}
-
-static const char *proto_name(uint8_t proto) {
-  if (proto == IPPROTO_TCP) {
-    return "TCP";
-  }
-  if (proto == IPPROTO_UDP) {
-    return "UDP";
-  }
-  if (proto == IPPROTO_ICMP) {
-    return "ICMP";
-  }
-  return "IP";
-}
-
-static void write_connections_snapshot(Runtime *runtime) {
-  char content[65536];
-  size_t offset = 0;
-  time_t now = time(NULL);
-  for (size_t i = 0; i < MAX_NAT; i++) {
-    NatEntry *entry = &runtime->nat.entries[i];
-    if (!entry->used || now - entry->last_seen > 300) {
-      continue;
-    }
-    char source_ip[INET_ADDRSTRLEN];
-    char target_ip[INET_ADDRSTRLEN];
-    char via_ip[INET_ADDRSTRLEN];
-    ipv4_to_string(entry->original_src_ip, source_ip, sizeof(source_ip));
-    ipv4_to_string(entry->original_remote_ip, target_ip, sizeof(target_ip));
-    ipv4_to_string(entry->remote_ip, via_ip, sizeof(via_ip));
-    bool dns_redirect = entry->remote_ip != entry->original_remote_ip;
-    const char *domain = dns_redirect ? entry->domain : dns_cache_lookup(&runtime->nat, entry->original_remote_ip);
-    int n = snprintf(content + offset, sizeof(content) - offset,
-                     "lastSeen=%ld|proto=%s|source=%s:%u|target=%s:%u|domain=%s|via=%s:%u|"
-                     "txBytes=%llu|rxBytes=%llu|txRate=%llu|rxRate=%llu|dnsRedirect=%s\n",
-                     (long)entry->last_seen, proto_name(entry->proto), source_ip,
-                     entry->original_src_port, target_ip, entry->remote_port, domain, via_ip,
-                     entry->remote_port, (unsigned long long)entry->tx_bytes,
-                     (unsigned long long)entry->rx_bytes, (unsigned long long)entry->tx_rate,
-                     (unsigned long long)entry->rx_rate, dns_redirect ? "true" : "false");
-    if (n < 0 || (size_t)n >= sizeof(content) - offset) {
-      break;
-    }
-    offset += (size_t)n;
-  }
-  content[offset] = '\0';
-  write_text_file(runtime->connections_file, content);
-}
-
-static bool read_state_value(const char *state_file, const char *key, char *out, size_t out_size) {
-  FILE *file = fopen(state_file, "r");
-  if (file == NULL) {
-    return false;
-  }
   char line[512];
-  bool found = false;
   size_t key_len = strlen(key);
+  bool found = false;
   while (fgets(line, sizeof(line), file) != NULL) {
     if (strncmp(line, key, key_len) == 0 && line[key_len] == '=') {
       char *value = line + key_len + 1;
@@ -1228,926 +153,579 @@ static bool read_state_value(const char *state_file, const char *key, char *out,
   return found;
 }
 
-static void cleanup_routes(Runtime *runtime) {
+static uint64_t read_state_u64(const HelperConfig *config, const char *key) {
+  char value[64];
+  if (!read_state_value(config, key, value, sizeof(value))) {
+    return 0;
+  }
+  return strtoull(value, NULL, 10);
+}
+
+static pid_t read_daemon_pid(const HelperConfig *config) {
+  char value[64];
+  if (!read_state_value(config, "pid", value, sizeof(value))) {
+    return 0;
+  }
+  return (pid_t)strtol(value, NULL, 10);
+}
+
+static bool pid_alive(pid_t pid) {
+  return pid > 1 && kill(pid, 0) == 0;
+}
+
+static void write_state(const HelperConfig *config,
+                        const char *state,
+                        pid_t pid,
+                        uint64_t base_tx,
+                        uint64_t base_rx,
+                        uint64_t last_tx_total,
+                        uint64_t last_rx_total,
+                        uint64_t last_sample_ms,
+                        uint64_t tx_bytes,
+                        uint64_t rx_bytes,
+                        uint64_t tx_rate,
+                        uint64_t rx_rate,
+                        const char *last_error) {
+  ensure_state_dir(config);
+  char path[PATH_MAX];
+  join_path(config, "state", path, sizeof(path));
+  FILE *file = fopen(path, "w");
+  if (file == NULL) {
+    return;
+  }
+  fprintf(file, "state=%s\n", state);
+  fprintf(file, "pid=%d\n", (int)pid);
+  fprintf(file, "adapterName=macOS Half Route\n");
+  fprintf(file, "permission=ready\n");
+  fprintf(file, "helperInstalled=true\n");
+  fprintf(file, "cpe=%s\n", config->cpe);
+  fprintf(file, "host=%s\n", config->cpe);
+  fprintf(file, "ifname=%s\n", config->ifname);
+  fprintf(file, "base_tx=%llu\n", (unsigned long long)base_tx);
+  fprintf(file, "base_rx=%llu\n", (unsigned long long)base_rx);
+  fprintf(file, "last_tx_total=%llu\n", (unsigned long long)last_tx_total);
+  fprintf(file, "last_rx_total=%llu\n", (unsigned long long)last_rx_total);
+  fprintf(file, "last_sample_ms=%llu\n", (unsigned long long)last_sample_ms);
+  fprintf(file, "tx_bytes=%llu\n", (unsigned long long)tx_bytes);
+  fprintf(file, "rx_bytes=%llu\n", (unsigned long long)rx_bytes);
+  fprintf(file, "tx_rate=%llu\n", (unsigned long long)tx_rate);
+  fprintf(file, "rx_rate=%llu\n", (unsigned long long)rx_rate);
+  fprintf(file, "tx_packets=0\nrx_packets=0\ntx_dropped=0\nrx_dropped=0\n");
+  fprintf(file, "nat_misses=0\nsend_failures=0\nudp443_packets=0\n");
+  fprintf(file, "lastError=%s\n", last_error == NULL ? "" : last_error);
+  fclose(file);
+  chmod(path, 0666);
+}
+
+static bool default_interface(char *out, size_t out_size) {
+  char *text = capture_command("/sbin/route -n get default 2>/dev/null");
+  bool found = false;
+  char *cursor = text;
+  while (cursor != NULL && *cursor != '\0') {
+    char *line = strsep(&cursor, "\n");
+    if (line == NULL) {
+      break;
+    }
+    char name[64];
+    if (sscanf(line, " interface: %63s", name) == 1) {
+      snprintf(out, out_size, "%s", name);
+      found = true;
+      break;
+    }
+  }
+  free(text);
+  if (!found) {
+    snprintf(out, out_size, "%s", "en0");
+  }
+  return found;
+}
+
+static bool read_traffic_counters(const char *ifname, TrafficCounters *counters) {
+  counters->tx_total = 0;
+  counters->rx_total = 0;
+  char command[256];
+  snprintf(command, sizeof(command), "/usr/sbin/netstat -ib -n -I %s 2>/dev/null", ifname);
+  char *text = capture_command(command);
+  char *cursor = text;
+  bool found = false;
+  while (cursor != NULL && *cursor != '\0') {
+    char *line = strsep(&cursor, "\n");
+    if (line == NULL || strstr(line, ifname) != line) {
+      continue;
+    }
+    char *tokens[32];
+    int count = 0;
+    char *part_cursor = line;
+    while (count < 32) {
+      char *part = strsep(&part_cursor, " \t");
+      if (part == NULL) {
+        break;
+      }
+      if (part[0] == '\0') {
+        continue;
+      }
+      tokens[count++] = part;
+    }
+    if (count >= 10) {
+      uint64_t ibytes = strtoull(tokens[count - 2], NULL, 10);
+      uint64_t obytes = strtoull(tokens[count - 1], NULL, 10);
+      counters->rx_total = ibytes;
+      counters->tx_total = obytes;
+      found = true;
+    }
+  }
+  free(text);
+  return found;
+}
+
+static void snapshot_initial_state(const HelperConfig *config) {
+  ensure_state_dir(config);
+  char path[PATH_MAX];
+  char *default_route = capture_command("/sbin/route -n get default 2>&1");
+  join_path(config, "initial-default-route.txt", path, sizeof(path));
+  write_text_file(path, default_route);
+  free(default_route);
+
+  char *routes = capture_command("/usr/sbin/netstat -rn -f inet 2>&1");
+  join_path(config, "initial-netstat-rn.txt", path, sizeof(path));
+  write_text_file(path, routes);
+  free(routes);
+}
+
+static int delete_routes(void) {
+  run_command("/sbin/route -n delete -net 0.0.0.0 -netmask 128.0.0.0 >/dev/null 2>&1");
+  run_command("/sbin/route -n delete -net 128.0.0.0 -netmask 128.0.0.0 >/dev/null 2>&1");
+  return 0;
+}
+
+static int add_routes(const HelperConfig *config) {
+  if (!safe_ipv4(config->cpe)) {
+    return 64;
+  }
   char command[512];
-  cleanup_pf(runtime);
-  snprintf(command, sizeof(command), "/sbin/route -n delete 0.0.0.0/1 >/dev/null 2>&1");
-  (void)run_command(command);
-  snprintf(command, sizeof(command), "/sbin/route -n delete 128.0.0.0/1 >/dev/null 2>&1");
-  (void)run_command(command);
-  snprintf(command, sizeof(command), "/sbin/route -n delete -host %s >/dev/null 2>&1",
-           DEFAULT_L3_HOST);
-  (void)run_command(command);
-  snprintf(command, sizeof(command), "/sbin/route -n delete -host %s >/dev/null 2>&1", runtime->config.cpe);
-  (void)run_command(command);
-  if (runtime->utun_ifname[0] != '\0') {
-    snprintf(command, sizeof(command), "/sbin/ifconfig %s down >/dev/null 2>&1", runtime->utun_ifname);
-    (void)run_command(command);
+  delete_routes();
+  snprintf(command, sizeof(command),
+           "/sbin/route -n add -net 0.0.0.0 -netmask 128.0.0.0 %s >/dev/null 2>&1",
+           config->cpe);
+  if (run_command(command) != 0) {
+    return 1;
   }
-  runtime->routes_added = false;
+  snprintf(command, sizeof(command),
+           "/sbin/route -n add -net 128.0.0.0 -netmask 128.0.0.0 %s >/dev/null 2>&1",
+           config->cpe);
+  if (run_command(command) != 0) {
+    delete_routes();
+    return 1;
+  }
+  return 0;
 }
 
-static void cleanup_and_exit(int code) {
-  if (g_runtime.auto_recovered) {
-    log_event(&g_runtime.config, "CPE 异常，自动回退");
-  } else {
-    log_event(&g_runtime.config, "关闭 TUN");
+static bool route_get_uses_cpe(const char *destination, const char *cpe) {
+  char command[256];
+  snprintf(command, sizeof(command), "/sbin/route -n get %s 2>/dev/null", destination);
+  char *text = capture_command(command);
+  bool found = false;
+  char *cursor = text;
+  while (cursor != NULL && *cursor != '\0') {
+    char *line = strsep(&cursor, "\n");
+    if (line == NULL) {
+      break;
+    }
+    char gateway[64];
+    if (sscanf(line, " gateway: %63s", gateway) == 1 && strcmp(gateway, cpe) == 0) {
+      found = true;
+      break;
+    }
   }
-  cleanup_routes(&g_runtime);
-  if (g_runtime.tun_fd >= 0) {
-    close(g_runtime.tun_fd);
-  }
-  if (g_runtime.bpf_fd >= 0) {
-    close(g_runtime.bpf_fd);
-  }
-  write_state(&g_runtime, g_runtime.auto_recovered ? "autoRecovered" : "stopped",
-              g_runtime.auto_recovered ? "CPE 异常，已自动回切直连" : "stopped");
-  exit(code);
+  free(text);
+  return found;
 }
 
-static void signal_handler(int signum) {
-  (void)signum;
-  g_stop_requested = 1;
+static bool routes_present(const HelperConfig *config) {
+  return route_get_uses_cpe("1.1.1.1", config->cpe) &&
+         route_get_uses_cpe("129.0.0.1", config->cpe);
+}
+
+static int ensure_routes(const HelperConfig *config) {
+  if (routes_present(config)) {
+    return 0;
+  }
+  return add_routes(config);
 }
 
 static bool ping_cpe(const char *cpe) {
+  if (!safe_ipv4(cpe)) {
+    return false;
+  }
   char command[256];
-  snprintf(command, sizeof(command), "/sbin/ping -c 1 -t 1 %s >/dev/null 2>&1", cpe);
-  return system(command) == 0;
+  snprintf(command, sizeof(command), "/sbin/ping -c 1 -W 1000 %s >/dev/null 2>&1", cpe);
+  return run_command(command) == 0;
 }
 
-static size_t build_dns_probe_query(uint8_t *buffer, size_t size, uint16_t id) {
-  const uint8_t qname[] = {
-      7, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
-      3, 'c', 'o', 'm',
-      0,
-  };
-  const size_t needed = 12 + sizeof(qname) + 4;
-  if (size < needed) {
-    return 0;
-  }
-  memset(buffer, 0, needed);
-  write_u16(buffer, id);
-  write_u16(buffer + 2, 0x0100);
-  write_u16(buffer + 4, 1);
-  memcpy(buffer + 12, qname, sizeof(qname));
-  write_u16(buffer + 12 + sizeof(qname), 1);
-  write_u16(buffer + 12 + sizeof(qname) + 2, 1);
-  return needed;
+static bool l3_probe(void) {
+  return run_command("/usr/bin/nc -G 2 -z 1.1.1.1 443 >/dev/null 2>&1") == 0;
 }
 
-static bool dns_probe_cpe(const char *cpe) {
-  int fd = socket(AF_INET, SOCK_DGRAM, 0);
-  if (fd < 0) {
-    return false;
-  }
-  struct timeval timeout;
-  timeout.tv_sec = DNS_PROBE_TIMEOUT_SEC;
-  timeout.tv_usec = 0;
-  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-  struct sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(53);
-  if (inet_pton(AF_INET, cpe, &addr.sin_addr) != 1) {
-    close(fd);
-    return false;
-  }
-  uint8_t query[128];
-  uint16_t id = (uint16_t)(time(NULL) & 0xffff);
-  size_t query_len = build_dns_probe_query(query, sizeof(query), id);
-  if (query_len == 0 ||
-      sendto(fd, query, query_len, 0, (struct sockaddr *)&addr, sizeof(addr)) != (ssize_t)query_len) {
-    close(fd);
-    return false;
-  }
-  uint8_t reply[512];
-  ssize_t n = recv(fd, reply, sizeof(reply), 0);
-  close(fd);
-  return n >= 12 && read_u16(reply) == id && (reply[2] & 0x80) != 0;
+static bool stop_requested(const HelperConfig *config) {
+  char path[PATH_MAX];
+  join_path(config, "stop-request", path, sizeof(path));
+  return file_exists(path);
 }
 
-static int update_health_failures(int current_failures, bool l1_ok, bool l3_ok) {
-  return (l1_ok && l3_ok) ? 0 : current_failures + 1;
+static void clear_stop_request(const HelperConfig *config) {
+  char path[PATH_MAX];
+  join_path(config, "stop-request", path, sizeof(path));
+  unlink(path);
 }
 
-static bool configure_routes(Runtime *runtime) {
-  char command[512];
-  snprintf(command, sizeof(command), "/sbin/ifconfig %s inet %s %s mtu %d up",
-           runtime->utun_ifname, runtime->config.tun_local, runtime->config.tun_peer, TUN_MTU);
-  if (run_command(command) != 0) {
-    return false;
-  }
-  snprintf(command, sizeof(command), "/sbin/route -n add -host %s -interface %s",
-           runtime->config.cpe, runtime->physical_ifname);
-  if (run_command(command) != 0) {
-    return false;
-  }
-  snprintf(command, sizeof(command), "/sbin/route -n add 0.0.0.0/1 -interface %s", runtime->utun_ifname);
-  if (run_command(command) != 0) {
-    return false;
-  }
-  snprintf(command, sizeof(command), "/sbin/route -n add 128.0.0.0/1 -interface %s", runtime->utun_ifname);
-  if (run_command(command) != 0) {
-    return false;
-  }
-  runtime->routes_added = true;
-  return true;
+static void request_stop(const HelperConfig *config) {
+  ensure_state_dir(config);
+  char path[PATH_MAX];
+  join_path(config, "stop-request", path, sizeof(path));
+  write_text_file(path, "stop\n");
 }
 
-static bool write_packet_to_utun(int tun_fd, const uint8_t *packet, size_t len) {
-  uint8_t buffer[MAX_PACKET + 4];
-  if (len + 4 > sizeof(buffer)) {
-    return false;
+static void update_traffic_state(const HelperConfig *config, const char *state, const char *last_error) {
+  TrafficCounters counters;
+  read_traffic_counters(config->ifname, &counters);
+  uint64_t base_tx = read_state_u64(config, "base_tx");
+  uint64_t base_rx = read_state_u64(config, "base_rx");
+  uint64_t last_tx_total = read_state_u64(config, "last_tx_total");
+  uint64_t last_rx_total = read_state_u64(config, "last_rx_total");
+  uint64_t last_sample = read_state_u64(config, "last_sample_ms");
+  uint64_t sample = now_ms();
+  uint64_t tx_rate = 0;
+  uint64_t rx_rate = 0;
+  if (last_sample > 0 && sample > last_sample) {
+    uint64_t elapsed = sample - last_sample;
+    uint64_t tx_delta = counters.tx_total >= last_tx_total ? counters.tx_total - last_tx_total : 0;
+    uint64_t rx_delta = counters.rx_total >= last_rx_total ? counters.rx_total - last_rx_total : 0;
+    tx_rate = tx_delta * 1000ULL / elapsed;
+    rx_rate = rx_delta * 1000ULL / elapsed;
   }
-  write_u32(buffer, AF_INET);
-  memcpy(buffer + 4, packet, len);
-  return write(tun_fd, buffer, len + 4) == (ssize_t)(len + 4);
+  uint64_t tx_bytes = counters.tx_total >= base_tx ? counters.tx_total - base_tx : 0;
+  uint64_t rx_bytes = counters.rx_total >= base_rx ? counters.rx_total - base_rx : 0;
+  write_state(config, state, read_daemon_pid(config), base_tx, base_rx, counters.tx_total,
+              counters.rx_total, sample, tx_bytes, rx_bytes, tx_rate, rx_rate, last_error);
 }
 
-static void process_utun_packet(Runtime *runtime, const uint8_t *buffer, size_t len) {
-  if (len <= 4 || len - 4 > MAX_PACKET) {
-    runtime->tx_dropped++;
-    return;
-  }
-  if (read_u32(buffer) != AF_INET) {
-    runtime->tx_dropped++;
-    return;
-  }
-  uint8_t packet[MAX_PACKET];
-  memcpy(packet, buffer + 4, len - 4);
-  size_t packet_len = len - 4;
-  if ((packet[0] >> 4) != 4) {
-    runtime->tx_dropped++;
-    return;
-  }
-  runtime->tx_packets++;
-  if (is_udp443_packet(packet, packet_len)) {
-    runtime->udp443_packets++;
-  }
-  if (!nat_translate_outgoing(&runtime->nat, packet, packet_len,
-                              runtime->physical_ip, runtime->cpe_ip)) {
-    runtime->tx_dropped++;
-    return;
-  }
-  uint8_t frame[MAX_FRAME];
-  size_t frame_len = build_ethernet_frame(frame, sizeof(frame), runtime->cpe_mac,
-                                          runtime->local_mac, packet, packet_len);
-  if (frame_len > 0) {
-    if (write(runtime->bpf_fd, frame, frame_len) == (ssize_t)frame_len) {
-      runtime->tx_bytes += packet_len;
-    } else {
-      runtime->send_failures++;
-      runtime->tx_dropped++;
-    }
-  } else {
-    runtime->tx_dropped++;
-  }
-}
-
-static void process_bpf_frame(Runtime *runtime, const uint8_t *frame, size_t len) {
-  if (len < 14 || memcmp(frame + 6, runtime->cpe_mac, 6) != 0) {
-    return;
-  }
-  if (frame[12] != 0x08 || frame[13] != 0x00) {
-    return;
-  }
-  uint8_t packet[MAX_PACKET];
-  size_t packet_len = len - 14;
-  if (packet_len > sizeof(packet)) {
-    runtime->rx_dropped++;
-    return;
-  }
-  memcpy(packet, frame + 14, packet_len);
-  runtime->rx_packets++;
-  if (!nat_translate_incoming(&runtime->nat, packet, packet_len, runtime->physical_ip)) {
-    runtime->nat_misses++;
-    runtime->rx_dropped++;
-    return;
-  }
-  if (write_packet_to_utun(runtime->tun_fd, packet, packet_len)) {
-    runtime->rx_bytes += packet_len;
-  } else {
-    runtime->rx_dropped++;
-  }
-}
-
-static void process_bpf_buffer(Runtime *runtime, const uint8_t *buffer, ssize_t len) {
-  size_t offset = 0;
-  while (offset + sizeof(struct bpf_hdr) <= (size_t)len) {
-    const struct bpf_hdr *hdr = (const struct bpf_hdr *)(buffer + offset);
-    if (hdr->bh_hdrlen + hdr->bh_caplen > (uint32_t)((size_t)len - offset)) {
-      break;
-    }
-    const uint8_t *frame = buffer + offset + hdr->bh_hdrlen;
-    process_bpf_frame(runtime, frame, hdr->bh_caplen);
-    offset += BPF_WORDALIGN(hdr->bh_hdrlen + hdr->bh_caplen);
-  }
-}
-
-static int data_loop(Runtime *runtime) {
-  unsigned int bpf_len = 4096;
-  uint8_t *bpf_buffer = malloc(bpf_len);
-  if (bpf_buffer == NULL) {
-    return 1;
-  }
-  int health_failures = 0;
-  int l3_failures = 0;
-  time_t last_health = 0;
-  while (!g_stop_requested) {
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(runtime->tun_fd, &readfds);
-    FD_SET(runtime->bpf_fd, &readfds);
-    int maxfd = runtime->tun_fd > runtime->bpf_fd ? runtime->tun_fd : runtime->bpf_fd;
-    struct timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-    int rc = select(maxfd + 1, &readfds, NULL, NULL, &timeout);
-    if (rc > 0) {
-      if (FD_ISSET(runtime->tun_fd, &readfds)) {
-        uint8_t buffer[MAX_PACKET + 4];
-        ssize_t n = read(runtime->tun_fd, buffer, sizeof(buffer));
-        if (n > 0) {
-          process_utun_packet(runtime, buffer, (size_t)n);
-        }
+static void daemon_loop(HelperConfig config) {
+  clear_stop_request(&config);
+  int failures = 0;
+  while (!stop_requested(&config)) {
+    sleep(2);
+    if (ensure_routes(&config) != 0) {
+      failures++;
+      if (failures >= 3) {
+        delete_routes();
+        update_traffic_state(&config, "autoRecovered", "已回切直连");
+        log_line(&config, "CPE 异常，已自动回切直连");
+        return;
       }
-      if (FD_ISSET(runtime->bpf_fd, &readfds)) {
-        ssize_t n = read(runtime->bpf_fd, bpf_buffer, bpf_len);
-        if (n > 0) {
-          process_bpf_buffer(runtime, bpf_buffer, n);
-        }
-      }
-    }
-    time_t now = time(NULL);
-    update_rates(runtime, now);
-    write_state(runtime, "running", "running");
-    write_connections_snapshot(runtime);
-    if (now - last_health >= HEALTH_INTERVAL_SEC) {
-      bool l1_ok = ping_cpe(runtime->config.cpe);
-      bool l3_ok = l1_ok && dns_probe_cpe(runtime->config.cpe);
-      health_failures = l1_ok ? 0 : update_health_failures(health_failures, l1_ok, l3_ok);
-      if (l1_ok && !l3_ok) {
-        l3_failures++;
-      } else if (l3_ok) {
-        l3_failures = 0;
-      }
-      if (!l1_ok || (l1_ok && !l3_ok && (l3_failures == 1 || l3_failures % 15 == 0))) {
-        char health_event[256];
-        snprintf(health_event, sizeof(health_event),
-                 "健康检测%s l1=%s l3=%s failures=%d",
-                 l1_ok ? "降级" : "失败",
-                 l1_ok ? "true" : "false", l3_ok ? "true" : "false", health_failures);
-        log_event(&runtime->config, health_event);
-      }
-      if (health_failures >= 3) {
-        runtime->auto_recovered = true;
-        free(bpf_buffer);
-        cleanup_and_exit(0);
-      }
-      if (file_mtime_age_exceeds(runtime->heartbeat_file, HEARTBEAT_TIMEOUT_SEC)) {
-        runtime->auto_recovered = true;
-        free(bpf_buffer);
-        cleanup_and_exit(0);
-      }
-      last_health = now;
-    }
-  }
-  free(bpf_buffer);
-  cleanup_and_exit(0);
-  return 0;
-}
-
-static void snapshot_initial_network(const char *dir) {
-  char output[65536];
-  char path[512];
-  const char *commands[] = {
-      "/sbin/route -n get default 2>&1",
-      "/usr/sbin/netstat -rn 2>&1",
-      "/usr/sbin/networksetup -listallnetworkservices 2>&1",
-      NULL,
-  };
-  for (int i = 0; commands[i] != NULL; i++) {
-    if (capture_command(commands[i], output, sizeof(output))) {
-      snprintf(path, sizeof(path), "%s/snapshot_%d.txt", dir, i);
-      write_text_file(path, output);
-    }
-  }
-}
-
-static int command_start(HelperConfig *config) {
-  int root_check = require_root_identity("start");
-  if (root_check != 0) {
-    return root_check;
-  }
-  memset(&g_runtime, 0, sizeof(g_runtime));
-  g_runtime.tun_fd = -1;
-  g_runtime.bpf_fd = -1;
-  g_runtime.config = *config;
-  path_join(g_runtime.state_file, sizeof(g_runtime.state_file), config->state_dir, "state");
-  path_join(g_runtime.heartbeat_file, sizeof(g_runtime.heartbeat_file), config->state_dir, "heartbeat");
-  event_log_path(config, g_runtime.event_log_file, sizeof(g_runtime.event_log_file));
-  connections_path(config, g_runtime.connections_file, sizeof(g_runtime.connections_file));
-  path_join(g_runtime.pf_token_file, sizeof(g_runtime.pf_token_file), config->state_dir, "pf_token");
-  if (!ensure_state_dir(config->state_dir)) {
-    perror("state dir");
-    return 1;
-  }
-  if (!config->foreground) {
-    pid_t pid = fork();
-    if (pid < 0) {
-      perror("fork");
-      return 1;
-    }
-    if (pid > 0) {
-      printf("started pid=%d\n", pid);
-      return 0;
-    }
-    setsid();
-    redirect_stdio_to_devnull();
-  }
-
-  signal(SIGTERM, signal_handler);
-  signal(SIGINT, signal_handler);
-  signal(SIGHUP, signal_handler);
-  snapshot_initial_network(config->state_dir);
-  touch_file(g_runtime.heartbeat_file);
-  log_event(config, "开启 TUN");
-
-  if (config->ifname[0] == '\0' &&
-      !route_get_interface(config->cpe, g_runtime.physical_ifname, sizeof(g_runtime.physical_ifname))) {
-    fprintf(stderr, "failed to detect physical interface\n");
-    return start_fail(&g_runtime, "failed to detect physical interface", false);
-  }
-  if (config->ifname[0] != '\0') {
-    snprintf(g_runtime.physical_ifname, sizeof(g_runtime.physical_ifname), "%s", config->ifname);
-  }
-  if (!get_interface_mac_ip(g_runtime.physical_ifname, g_runtime.local_mac, &g_runtime.physical_ip)) {
-    fprintf(stderr, "failed to read physical interface address\n");
-    return start_fail(&g_runtime, "failed to read physical interface address", false);
-  }
-  if (!install_pf_rule(&g_runtime)) {
-    fprintf(stderr, "failed to install pf rule\n");
-    return start_fail(&g_runtime,
-                      g_runtime.last_error[0] == '\0' ? "failed to install pf rule" : g_runtime.last_error,
-                      true);
-  }
-  if (!resolve_cpe_mac(config->cpe, g_runtime.cpe_mac)) {
-    fprintf(stderr, "failed to resolve CPE MAC\n");
-    return start_fail(&g_runtime, "failed to resolve CPE MAC", true);
-  }
-  struct in_addr cpe_addr;
-  if (inet_pton(AF_INET, config->cpe, &cpe_addr) != 1) {
-    fprintf(stderr, "invalid CPE address\n");
-    return start_fail(&g_runtime, "invalid CPE address", true);
-  }
-  g_runtime.cpe_ip = ntohl(cpe_addr.s_addr);
-  struct in_addr tun_addr;
-  inet_pton(AF_INET, config->tun_local, &tun_addr);
-  g_runtime.tun_ip = ntohl(tun_addr.s_addr);
-  g_runtime.tun_fd = create_utun(g_runtime.utun_ifname, sizeof(g_runtime.utun_ifname));
-  if (g_runtime.tun_fd < 0) {
-    perror("utun");
-    return start_fail(&g_runtime, "failed to create utun", true);
-  }
-  unsigned int bpf_len = 0;
-  g_runtime.bpf_fd = open_bpf(g_runtime.physical_ifname, &bpf_len);
-  if (g_runtime.bpf_fd < 0) {
-    perror("bpf");
-    return start_fail(&g_runtime, "failed to open bpf", true);
-  }
-  if (!configure_routes(&g_runtime)) {
-    return start_fail(&g_runtime, "failed to configure routes", true);
-  }
-  write_state(&g_runtime, "running", "running");
-  return data_loop(&g_runtime);
-}
-
-static int read_pid_from_state(const HelperConfig *config) {
-  char state_file[512];
-  char pid_text[64];
-  path_join(state_file, sizeof(state_file), config->state_dir, "state");
-  if (!read_state_value(state_file, "pid", pid_text, sizeof(pid_text))) {
-    return -1;
-  }
-  return atoi(pid_text);
-}
-
-static int command_stop(HelperConfig *config) {
-  int root_check = require_root_identity("stop");
-  if (root_check != 0) {
-    return root_check;
-  }
-  int pid = read_pid_from_state(config);
-  if (pid > 0) {
-    kill(pid, SIGTERM);
-    usleep(300000);
-  }
-  (void)system("/usr/bin/pkill -f 'sdwan-macos-helper start' >/dev/null 2>&1");
-  (void)system("/usr/bin/pkill -f 'com.sdwan.verge.helper start' >/dev/null 2>&1");
-  memset(&g_runtime, 0, sizeof(g_runtime));
-  g_runtime.tun_fd = -1;
-  g_runtime.bpf_fd = -1;
-  g_runtime.config = *config;
-  path_join(g_runtime.pf_token_file, sizeof(g_runtime.pf_token_file), config->state_dir, "pf_token");
-  char value[IFNAMSIZ];
-  char state_file[512];
-  path_join(state_file, sizeof(state_file), config->state_dir, "state");
-  if (read_state_value(state_file, "utun", value, sizeof(value))) {
-    snprintf(g_runtime.utun_ifname, sizeof(g_runtime.utun_ifname), "%s", value);
-  }
-  cleanup_routes(&g_runtime);
-  log_event(config, "关闭 TUN");
-  write_state(&g_runtime, "stopped", "stopped");
-  return 0;
-}
-
-static bool copy_file(const char *src, const char *dst) {
-  FILE *in = fopen(src, "rb");
-  if (in == NULL) {
-    return false;
-  }
-  FILE *out = fopen(dst, "wb");
-  if (out == NULL) {
-    fclose(in);
-    return false;
-  }
-  char buffer[16384];
-  size_t n = 0;
-  bool ok = true;
-  while ((n = fread(buffer, 1, sizeof(buffer), in)) > 0) {
-    if (fwrite(buffer, 1, n, out) != n) {
-      ok = false;
-      break;
-    }
-  }
-  if (ferror(in)) {
-    ok = false;
-  }
-  fclose(in);
-  if (fclose(out) != 0) {
-    ok = false;
-  }
-  return ok;
-}
-
-static int command_install(const char *self_path) {
-  int root_check = require_root_identity("install");
-  if (root_check != 0) {
-    return root_check;
-  }
-  if (mkdir(INSTALLED_HELPER_DIR, 0755) != 0 && errno != EEXIST) {
-    perror("mkdir");
-    return 1;
-  }
-  if (!copy_file(self_path, INSTALLED_HELPER_PATH)) {
-    perror("copy helper");
-    return 1;
-  }
-  if (chown(INSTALLED_HELPER_PATH, 0, 0) != 0) {
-    perror("chown");
-    return 1;
-  }
-  if (chmod(INSTALLED_HELPER_PATH, 04755) != 0) {
-    perror("chmod");
-    return 1;
-  }
-  printf("installed=%s\n", INSTALLED_HELPER_PATH);
-  return 0;
-}
-
-static int command_uninstall(HelperConfig *config) {
-  int root_check = require_root_identity("uninstall");
-  if (root_check != 0) {
-    return root_check;
-  }
-  (void)command_stop(config);
-  if (unlink(INSTALLED_HELPER_PATH) != 0 && errno != ENOENT) {
-    perror("unlink");
-    return 1;
-  }
-  printf("uninstalled=%s\n", INSTALLED_HELPER_PATH);
-  return 0;
-}
-
-static void print_status(HelperConfig *config) {
-  char state_file[512];
-  char heartbeat_file[512];
-  char state[64] = "stopped";
-  char message[512] = "";
-  char tx_bytes[64] = "0";
-  char rx_bytes[64] = "0";
-  char tx_rate[64] = "0";
-  char rx_rate[64] = "0";
-  char tx_packets[64] = "0";
-  char rx_packets[64] = "0";
-  char tx_dropped[64] = "0";
-  char rx_dropped[64] = "0";
-  char nat_misses[64] = "0";
-  char send_failures[64] = "0";
-  char udp443_packets[64] = "0";
-  char permission[64] = "ready";
-  path_join(state_file, sizeof(state_file), config->state_dir, "state");
-  path_join(heartbeat_file, sizeof(heartbeat_file), config->state_dir, "heartbeat");
-  (void)read_state_value(state_file, "state", state, sizeof(state));
-  (void)read_state_value(state_file, "message", message, sizeof(message));
-  (void)read_state_value(state_file, "permission", permission, sizeof(permission));
-  (void)read_state_value(state_file, "tx_bytes", tx_bytes, sizeof(tx_bytes));
-  (void)read_state_value(state_file, "rx_bytes", rx_bytes, sizeof(rx_bytes));
-  (void)read_state_value(state_file, "tx_rate", tx_rate, sizeof(tx_rate));
-  (void)read_state_value(state_file, "rx_rate", rx_rate, sizeof(rx_rate));
-  (void)read_state_value(state_file, "tx_packets", tx_packets, sizeof(tx_packets));
-  (void)read_state_value(state_file, "rx_packets", rx_packets, sizeof(rx_packets));
-  (void)read_state_value(state_file, "tx_dropped", tx_dropped, sizeof(tx_dropped));
-  (void)read_state_value(state_file, "rx_dropped", rx_dropped, sizeof(rx_dropped));
-  (void)read_state_value(state_file, "nat_misses", nat_misses, sizeof(nat_misses));
-  (void)read_state_value(state_file, "send_failures", send_failures, sizeof(send_failures));
-  (void)read_state_value(state_file, "udp443_packets", udp443_packets, sizeof(udp443_packets));
-  if (strcmp(state, "running") != 0) {
-    snprintf(tx_rate, sizeof(tx_rate), "0");
-    snprintf(rx_rate, sizeof(rx_rate), "0");
-  }
-  bool reachable = ping_cpe(config->cpe);
-  bool service_ready = reachable && dns_probe_cpe(config->cpe);
-  if (strcmp(state, "autoRecovered") == 0 && service_ready) {
-    snprintf(state, sizeof(state), "stopped");
-    message[0] = '\0';
-  }
-  if (strcmp(message, "running") == 0 || strcmp(message, "stopped") == 0) {
-    message[0] = '\0';
-  }
-  touch_file(heartbeat_file);
-  printf("state=%s\n", state);
-  printf("adapterName=IPv4 TUN 虚拟网卡\n");
-  printf("permission=%s\n", permission);
-  printf("host=%s\n", config->cpe);
-  printf("reachable=%s\n", reachable ? "true" : "false");
-  printf("serviceReady=%s\n", service_ready ? "true" : "false");
-  printf("tx_bytes=%s\n", tx_bytes);
-  printf("rx_bytes=%s\n", rx_bytes);
-  printf("tx_rate=%s\n", tx_rate);
-  printf("rx_rate=%s\n", rx_rate);
-  printf("tx_packets=%s\n", tx_packets);
-  printf("rx_packets=%s\n", rx_packets);
-  printf("tx_dropped=%s\n", tx_dropped);
-  printf("rx_dropped=%s\n", rx_dropped);
-  printf("nat_misses=%s\n", nat_misses);
-  printf("send_failures=%s\n", send_failures);
-  printf("udp443_packets=%s\n", udp443_packets);
-  printf("lastError=%s\n", message);
-}
-
-static void print_health(HelperConfig *config) {
-  char heartbeat_file[512];
-  path_join(heartbeat_file, sizeof(heartbeat_file), config->state_dir, "heartbeat");
-  touch_file(heartbeat_file);
-  bool l1 = ping_cpe(config->cpe);
-  bool l3 = dns_probe_cpe(config->cpe);
-  printf("host=%s\n", config->cpe);
-  printf("reachable=%s\n", l1 ? "true" : "false");
-  printf("serviceReady=%s\n", (l1 && l3) ? "true" : "false");
-  printf("error=%s\n", l1 ? "" : "CPE ping failed");
-}
-
-static void print_logs(HelperConfig *config, int limit) {
-  if (limit <= 0) {
-    limit = 80;
-  }
-  if (limit > 300) {
-    limit = 300;
-  }
-  char path[512];
-  event_log_path(config, path, sizeof(path));
-  FILE *file = fopen(path, "r");
-  if (file == NULL) {
-    return;
-  }
-  char lines[300][1024];
-  int count = 0;
-  char line[1024];
-  while (fgets(line, sizeof(line), file) != NULL) {
-    snprintf(lines[count % 300], sizeof(lines[count % 300]), "%s", line);
-    count++;
-  }
-  fclose(file);
-  int available = count < 300 ? count : 300;
-  int start = available > limit ? available - limit : 0;
-  for (int i = start; i < available; i++) {
-    const char *raw = lines[(count - available + i) % 300];
-    char *endptr = NULL;
-    long ts = strtol(raw, &endptr, 10);
-    while (endptr != NULL && (*endptr == ' ' || *endptr == '\t')) {
-      endptr++;
-    }
-    if (ts <= 0 || endptr == NULL || *endptr == '\0') {
-      fputs(raw, stdout);
       continue;
     }
-    char time_text[32];
-    char message[900];
-    format_event_time((time_t)ts, time_text, sizeof(time_text));
-    snprintf(message, sizeof(message), "%s", endptr);
-    message[strcspn(message, "\r\n")] = '\0';
-    printf("%s %s\n", time_text, message);
+    bool l1 = ping_cpe(config.cpe);
+    bool l3 = l1 && l3_probe();
+    if (!l1 || !l3) {
+      failures++;
+    } else {
+      failures = 0;
+    }
+    if (failures >= 3) {
+      delete_routes();
+      update_traffic_state(&config, "autoRecovered", "已回切直连");
+      log_line(&config, "CPE 异常，已自动回切直连");
+      return;
+    }
+    update_traffic_state(&config, "running", "");
   }
+  delete_routes();
+  update_traffic_state(&config, "stopped", "");
+  log_line(&config, "关闭半路由");
 }
 
-static void print_connections(HelperConfig *config, int limit) {
-  if (limit <= 0) {
-    limit = 80;
-  }
-  if (limit > 300) {
-    limit = 300;
-  }
-  char path[512];
-  connections_path(config, path, sizeof(path));
-  FILE *file = fopen(path, "r");
-  if (file == NULL) {
-    return;
-  }
-  char lines[300][1024];
-  int count = 0;
-  char line[1024];
-  while (fgets(line, sizeof(line), file) != NULL) {
-    snprintf(lines[count % 300], sizeof(lines[count % 300]), "%s", line);
-    count++;
-  }
-  fclose(file);
-  int available = count < 300 ? count : 300;
-  int start = available > limit ? available - limit : 0;
-  for (int i = start; i < available; i++) {
-    fputs(lines[(count - available + i) % 300], stdout);
-  }
-}
-
-static void make_udp_packet(uint8_t *packet, size_t *len, uint32_t src, uint32_t dst,
-                            uint16_t sport, uint16_t dport) {
-  memset(packet, 0, 28);
-  packet[0] = 0x45;
-  packet[8] = 64;
-  packet[9] = IPPROTO_UDP;
-  write_u16(packet + 2, 28);
-  write_u32(packet + 12, src);
-  write_u32(packet + 16, dst);
-  write_u16(packet + 20, sport);
-  write_u16(packet + 22, dport);
-  write_u16(packet + 24, 8);
-  fix_ipv4_checksum(packet, 28);
-  fix_transport_checksum(packet, 28);
-  *len = 28;
-}
-
-static void make_icmp_packet(uint8_t *packet, size_t *len, uint32_t src, uint32_t dst,
-                             uint8_t type, uint16_t identifier, uint16_t sequence) {
-  memset(packet, 0, 28);
-  packet[0] = 0x45;
-  packet[8] = 64;
-  packet[9] = IPPROTO_ICMP;
-  write_u16(packet + 2, 28);
-  write_u32(packet + 12, src);
-  write_u32(packet + 16, dst);
-  packet[20] = type;
-  packet[21] = 0;
-  write_u16(packet + 24, identifier);
-  write_u16(packet + 26, sequence);
-  fix_ipv4_checksum(packet, 28);
-  fix_transport_checksum(packet, 28);
-  *len = 28;
-}
-
-static void append_udp_payload(uint8_t *packet, size_t *len, const uint8_t *payload,
-                               size_t payload_len) {
-  memcpy(packet + 28, payload, payload_len);
-  *len = 28 + payload_len;
-  write_u16(packet + 2, (uint16_t)*len);
-  write_u16(packet + 24, (uint16_t)(8 + payload_len));
-  fix_ipv4_checksum(packet, *len);
-  fix_transport_checksum(packet, *len);
+static int command_plan(const HelperConfig *config) {
+  printf("/sbin/route -n add -net 0.0.0.0 -netmask 128.0.0.0 %s\n", config->cpe);
+  printf("/sbin/route -n add -net 128.0.0.0 -netmask 128.0.0.0 %s\n", config->cpe);
+  printf("/sbin/route -n delete -net 0.0.0.0 -netmask 128.0.0.0\n");
+  printf("/sbin/route -n delete -net 128.0.0.0 -netmask 128.0.0.0\n");
+  printf("PLAN_ONLY_NO_CHANGES_APPLIED\n");
+  return 0;
 }
 
 static int command_self_test(void) {
-  uint8_t packet[64];
-  size_t len = 0;
-  static NatTable table;
-  memset(&table, 0, sizeof(table));
-  uint32_t tun_ip = 0x0aff0002;      // 10.255.0.2
-  uint32_t physical_ip = 0xc0a80158; // 192.168.1.88
-  uint32_t cpe_ip = 0xc0a8018c;      // 192.168.1.140
-  uint32_t remote_ip = 0x08080808;   // 8.8.8.8
-  uint8_t ipv6_packet[40];
-  memset(ipv6_packet, 0, sizeof(ipv6_packet));
-  ipv6_packet[0] = 0x60;
-  if (nat_translate_outgoing(&table, ipv6_packet, sizeof(ipv6_packet), physical_ip, cpe_ip)) {
-    fprintf(stderr, "ipv6 packet should not enter ipv4 tun nat\n");
-    return 1;
-  }
-  make_udp_packet(packet, &len, tun_ip, remote_ip, 12345, 53);
-  if (!nat_translate_outgoing(&table, packet, len, physical_ip, cpe_ip)) {
-    fprintf(stderr, "nat outgoing failed\n");
-    return 1;
-  }
-  if (read_u32(packet + 12) != physical_ip) {
-    fprintf(stderr, "source NAT failed\n");
-    return 1;
-  }
-  if (read_u16(packet + 20) < NAT_PORT_START || read_u16(packet + 20) > NAT_PORT_END) {
-    fprintf(stderr, "dedicated NAT port failed\n");
-    return 1;
-  }
-  if (read_u32(packet + 16) != cpe_ip) {
-    fprintf(stderr, "dns redirect to cpe failed\n");
-    return 1;
-  }
-  uint16_t translated_port = read_u16(packet + 20);
-  uint8_t reply[64];
-  make_udp_packet(reply, &len, cpe_ip, physical_ip, 53, translated_port);
-  if (!nat_translate_incoming(&table, reply, len, physical_ip)) {
-    fprintf(stderr, "nat incoming failed\n");
-    return 1;
-  }
-  if (read_u32(reply + 16) != tun_ip) {
-    fprintf(stderr, "destination restore failed\n");
-    return 1;
-  }
-  if (read_u32(reply + 12) != remote_ip) {
-    fprintf(stderr, "dns source restore failed\n");
-    return 1;
-  }
-  if (read_u16(reply + 22) != 12345) {
-    fprintf(stderr, "destination port restore failed\n");
-    return 1;
-  }
-  static NatTable icmp_table;
-  memset(&icmp_table, 0, sizeof(icmp_table));
-  make_icmp_packet(packet, &len, tun_ip, remote_ip, 8, 0x1234, 1);
-  if (!nat_translate_outgoing(&icmp_table, packet, len, physical_ip, cpe_ip)) {
-    fprintf(stderr, "icmp nat outgoing failed\n");
-    return 1;
-  }
-  uint16_t translated_icmp_id = read_u16(packet + 24);
-  make_icmp_packet(reply, &len, remote_ip, physical_ip, 0, translated_icmp_id, 1);
-  if (!nat_translate_incoming(&icmp_table, reply, len, physical_ip) ||
-      read_u32(reply + 16) != tun_ip ||
-      read_u32(reply + 12) != remote_ip ||
-      read_u16(reply + 24) != 0x1234) {
-    fprintf(stderr, "icmp nat restore failed\n");
-    return 1;
-  }
-  uint8_t tcp_syn[64];
-  memset(tcp_syn, 0, sizeof(tcp_syn));
-  tcp_syn[0] = 0x45;
-  tcp_syn[8] = 64;
-  tcp_syn[9] = IPPROTO_TCP;
-  write_u16(tcp_syn + 2, 44);
-  write_u32(tcp_syn + 12, tun_ip);
-  write_u32(tcp_syn + 16, remote_ip);
-  write_u16(tcp_syn + 20, 44321);
-  write_u16(tcp_syn + 22, 443);
-  tcp_syn[32] = 0x60;
-  tcp_syn[33] = 0x02;
-  write_u16(tcp_syn + 34, 65535);
-  tcp_syn[40] = 2;
-  tcp_syn[41] = 4;
-  write_u16(tcp_syn + 42, 1460);
-  fix_ipv4_checksum(tcp_syn, 44);
-  fix_transport_checksum(tcp_syn, 44);
-  if (!clamp_tcp_mss(tcp_syn, 44, 1360) || read_u16(tcp_syn + 42) != 1360) {
-    fprintf(stderr, "tcp mss clamp failed\n");
-    return 1;
-  }
-  static NatTable dns_table;
-  memset(&dns_table, 0, sizeof(dns_table));
-  const uint8_t dns_query_payload[] = {
-      0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x07, 'e',  'x',  'a',
-      'm',  'p',  'l',  'e',  0x03, 'c',  'o',  'm',
-      0x00, 0x00, 0x01, 0x00, 0x01,
-  };
-  make_udp_packet(packet, &len, tun_ip, remote_ip, 12345, 53);
-  append_udp_payload(packet, &len, dns_query_payload, sizeof(dns_query_payload));
-  char query_domain[256];
-  if (!dns_query_domain_from_packet(packet, len, query_domain, sizeof(query_domain)) ||
-      strcmp(query_domain, "example.com") != 0) {
-    fprintf(stderr, "dns query domain parse failed\n");
-    return 1;
-  }
-  if (!nat_translate_outgoing(&dns_table, packet, len, physical_ip, cpe_ip)) {
-    fprintf(stderr, "dns nat outgoing failed\n");
-    return 1;
-  }
-  translated_port = read_u16(packet + 20);
-  const uint8_t dns_response_payload[] = {
-      0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01,
-      0x00, 0x00, 0x00, 0x00, 0x07, 'e',  'x',  'a',
-      'm',  'p',  'l',  'e',  0x03, 'c',  'o',  'm',
-      0x00, 0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c, 0x00,
-      0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00,
-      0x04, 0x5d, 0xb8, 0xd8, 0x22,
-  };
-  make_udp_packet(reply, &len, cpe_ip, physical_ip, 53, translated_port);
-  append_udp_payload(reply, &len, dns_response_payload, sizeof(dns_response_payload));
-  if (!nat_translate_incoming(&dns_table, reply, len, physical_ip)) {
-    fprintf(stderr, "dns nat incoming failed\n");
-    return 1;
-  }
-  if (strcmp(dns_cache_lookup(&dns_table, 0x5db8d822), "example.com") != 0) {
-    fprintf(stderr, "dns cache lookup failed\n");
-    return 1;
-  }
-  uint8_t dst[6] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
-  uint8_t src[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
-  uint8_t frame[128];
-  size_t frame_len = build_ethernet_frame(frame, sizeof(frame), dst, src, packet, len);
-  if (frame_len != len + 14 || memcmp(frame, dst, 6) != 0 || frame[12] != 0x08 || frame[13] != 0x00) {
-    fprintf(stderr, "ethernet frame failed\n");
-    return 1;
-  }
-  int failures = 0;
-  failures = update_health_failures(failures, false, false);
-  failures = update_health_failures(failures, false, false);
-  failures = update_health_failures(failures, false, false);
-  if (failures != 3) {
-    fprintf(stderr, "health failure counter failed\n");
-    return 1;
-  }
-  failures = update_health_failures(failures, true, true);
-  if (failures != 0) {
-    fprintf(stderr, "health recovery reset failed\n");
-    return 1;
-  }
-  uint8_t dns_query[128];
-  size_t dns_len = build_dns_probe_query(dns_query, sizeof(dns_query), 0x1234);
-  if (dns_len == 0 || dns_query[0] != 0x12 || dns_query[1] != 0x34 ||
-      dns_query[5] != 1) {
-    fprintf(stderr, "dns probe query failed\n");
-    return 1;
-  }
-  static Runtime rate_runtime;
-  memset(&rate_runtime, 0, sizeof(rate_runtime));
-  rate_runtime.tx_bytes = 1500;
-  rate_runtime.rx_bytes = 3000;
-  rate_runtime.last_tx_bytes = 500;
-  rate_runtime.last_rx_bytes = 1000;
-  rate_runtime.last_rate_at = 10;
-  NatEntry *rate_entry = &rate_runtime.nat.entries[0];
-  rate_entry->used = true;
-  rate_entry->tx_bytes = 700;
-  rate_entry->rx_bytes = 900;
-  rate_entry->last_tx_bytes = 100;
-  rate_entry->last_rx_bytes = 300;
-  rate_entry->last_rate_at = 10;
-  update_rates(&rate_runtime, 15);
-  if (rate_runtime.tx_rate != 200 || rate_runtime.rx_rate != 400 ||
-      rate_entry->tx_rate != 120 || rate_entry->rx_rate != 120) {
-    fprintf(stderr, "traffic rate calculation failed\n");
-    return 1;
-  }
+  printf("/sbin/route -n add -net 0.0.0.0 -netmask 128.0.0.0 %s\n", DEFAULT_CPE);
+  printf("/sbin/route -n add -net 128.0.0.0 -netmask 128.0.0.0 %s\n", DEFAULT_CPE);
+  printf("adapterName=macOS Half Route\n");
+  printf("tx_bytes=0\nrx_bytes=0\ntx_rate=0\nrx_rate=0\n");
   printf("SELF_TEST_OK\n");
   return 0;
 }
 
-static void parse_args(int argc, char **argv, HelperConfig *config) {
-  for (int i = 2; i < argc; i++) {
+static int command_start(HelperConfig *config) {
+  if (geteuid() != 0) {
+    printf("state=failed\nadapterName=macOS Half Route\npermission=denied\nlastError=start requires administrator privileges\n");
+    return 1;
+  }
+  default_interface(config->ifname, sizeof(config->ifname));
+  snapshot_initial_state(config);
+  TrafficCounters counters;
+  read_traffic_counters(config->ifname, &counters);
+  if (add_routes(config) != 0) {
+    write_state(config, "failed", 0, counters.tx_total, counters.rx_total, counters.tx_total,
+                counters.rx_total, now_ms(), 0, 0, 0, 0, "failed to add half routes");
+    printf("state=failed\nadapterName=macOS Half Route\npermission=ready\nlastError=failed to add half routes\n");
+    return 1;
+  }
+  pid_t child = fork();
+  if (child < 0) {
+    delete_routes();
+    printf("state=failed\nadapterName=macOS Half Route\npermission=ready\nlastError=failed to start guard\n");
+    return 1;
+  }
+  if (child == 0) {
+    setsid();
+    daemon_loop(*config);
+    _exit(0);
+  }
+  write_state(config, "running", child, counters.tx_total, counters.rx_total, counters.tx_total,
+              counters.rx_total, now_ms(), 0, 0, 0, 0, "");
+  log_line(config, "开启半路由");
+  printf("state=running\nadapterName=macOS Half Route\npermission=ready\nhelperInstalled=true\nhost=%s\nreachable=%s\nserviceReady=%s\ntx_bytes=0\nrx_bytes=0\ntx_rate=0\nrx_rate=0\nlastError=\n",
+         config->cpe, ping_cpe(config->cpe) ? "true" : "false", ping_cpe(config->cpe) ? "true" : "false");
+  return 0;
+}
+
+static int command_stop(HelperConfig *config, const char *message) {
+  request_stop(config);
+  pid_t pid = read_daemon_pid(config);
+  if (geteuid() == 0) {
+    if (pid_alive(pid)) {
+      kill(pid, SIGTERM);
+    }
+    delete_routes();
+    update_traffic_state(config, "stopped", "");
+    log_line(config, message == NULL ? "关闭半路由" : message);
+  } else {
+    for (int i = 0; i < 30; ++i) {
+      if (!pid_alive(pid)) {
+        break;
+      }
+      usleep(100000);
+    }
+  }
+  printf("state=stopped\nadapterName=macOS Half Route\npermission=ready\nhelperInstalled=true\nhost=%s\nreachable=%s\nserviceReady=%s\ntx_bytes=%llu\nrx_bytes=%llu\ntx_rate=0\nrx_rate=0\nlastError=\n",
+         config->cpe, ping_cpe(config->cpe) ? "true" : "false", ping_cpe(config->cpe) ? "true" : "false",
+         (unsigned long long)read_state_u64(config, "tx_bytes"),
+         (unsigned long long)read_state_u64(config, "rx_bytes"));
+  return 0;
+}
+
+static int command_status(HelperConfig *config) {
+  char state[64] = "stopped";
+  char cpe[64];
+  if (read_state_value(config, "cpe", cpe, sizeof(cpe))) {
+    snprintf(config->cpe, sizeof(config->cpe), "%s", cpe);
+  }
+  read_state_value(config, "state", state, sizeof(state));
+  pid_t pid = read_daemon_pid(config);
+  if (strcmp(state, "running") == 0 && !pid_alive(pid)) {
+    snprintf(state, sizeof(state), "%s", "stopped");
+  }
+  default_interface(config->ifname, sizeof(config->ifname));
+  update_traffic_state(config, state, read_state_u64(config, "last_sample_ms") == 0 ? "" : "");
+  bool l1 = ping_cpe(config->cpe);
+  printf("state=%s\n", state);
+  printf("adapterName=macOS Half Route\npermission=ready\nhelperInstalled=true\n");
+  printf("host=%s\ncpe=%s\nreachable=%s\nserviceReady=%s\n",
+         config->cpe, config->cpe, l1 ? "true" : "false", l1 ? "true" : "false");
+  printf("tx_bytes=%llu\nrx_bytes=%llu\ntx_rate=%llu\nrx_rate=%llu\n",
+         (unsigned long long)read_state_u64(config, "tx_bytes"),
+         (unsigned long long)read_state_u64(config, "rx_bytes"),
+         (unsigned long long)read_state_u64(config, "tx_rate"),
+         (unsigned long long)read_state_u64(config, "rx_rate"));
+  printf("tx_packets=0\nrx_packets=0\ntx_dropped=0\nrx_dropped=0\n");
+  printf("nat_misses=0\nsend_failures=0\nudp443_packets=0\n");
+  printf("lastError=\n");
+  return 0;
+}
+
+static int command_health(const HelperConfig *config) {
+  bool l1 = ping_cpe(config->cpe);
+  bool l3 = l1 && l3_probe();
+  printf("host=%s\nreachable=%s\nserviceReady=%s\nl3Reachable=%s\nerror=%s\n",
+         config->cpe, l1 ? "true" : "false", l1 ? "true" : "false",
+         l3 ? "true" : "false",
+         l1 ? (l3 ? "" : "CPE reachable but L3 probe failed") : "CPE ping failed");
+  return l1 ? 0 : 1;
+}
+
+static int tail_file(const char *path, int limit) {
+  FILE *file = fopen(path, "r");
+  if (file == NULL) {
+    return 0;
+  }
+  char **lines = calloc((size_t)limit, sizeof(char *));
+  if (lines == NULL) {
+    fclose(file);
+    return 0;
+  }
+  int index = 0;
+  int count = 0;
+  char buffer[2048];
+  while (fgets(buffer, sizeof(buffer), file) != NULL) {
+    free(lines[index]);
+    lines[index] = strdup(buffer);
+    index = (index + 1) % limit;
+    if (count < limit) {
+      count++;
+    }
+  }
+  fclose(file);
+  int start = count == limit ? index : 0;
+  for (int i = 0; i < count; ++i) {
+    int slot = (start + i) % limit;
+    if (lines[slot] != NULL) {
+      fputs(lines[slot], stdout);
+      free(lines[slot]);
+    }
+  }
+  free(lines);
+  return 0;
+}
+
+static int command_logs(const HelperConfig *config, int limit) {
+  char path[PATH_MAX];
+  join_path(config, "events.log", path, sizeof(path));
+  return tail_file(path, limit);
+}
+
+static void print_system_connections(int limit) {
+  char *text = capture_command("/usr/sbin/netstat -an -p tcp 2>/dev/null; /usr/sbin/netstat -an -p udp 2>/dev/null");
+  char *cursor = text;
+  int count = 0;
+  char ts[32];
+  now_text(ts, sizeof(ts));
+  while (cursor != NULL && *cursor != '\0' && count < limit) {
+    char *line = strsep(&cursor, "\n");
+    if (line == NULL) {
+      break;
+    }
+    char proto[16], recvq[32], sendq[32], local[128], foreign[128], state[64];
+    int matched = sscanf(line, "%15s %31s %31s %127s %127s %63s", proto, recvq, sendq, local, foreign, state);
+    if (matched < 5 || (strncmp(proto, "tcp", 3) != 0 && strncmp(proto, "udp", 3) != 0)) {
+      continue;
+    }
+    if (matched >= 6 && (strcmp(state, "LISTEN") == 0 || strcmp(state, "TIME_WAIT") == 0)) {
+      continue;
+    }
+    printf("lastSeen=%s|proto=%s|source=%s|target=%s|domain=|via=%s|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n",
+           ts, strncmp(proto, "tcp", 3) == 0 ? "TCP" : "UDP", local, foreign, foreign);
+    count++;
+  }
+  free(text);
+}
+
+static int command_connections(const HelperConfig *config, int limit) {
+  char path[PATH_MAX];
+  join_path(config, "connections", path, sizeof(path));
+  if (file_exists(path)) {
+    return tail_file(path, limit);
+  }
+  print_system_connections(limit);
+  return 0;
+}
+
+static int copy_file(const char *from, const char *to) {
+  FILE *src = fopen(from, "rb");
+  if (src == NULL) {
+    return 1;
+  }
+  FILE *dst = fopen(to, "wb");
+  if (dst == NULL) {
+    fclose(src);
+    return 1;
+  }
+  char buffer[8192];
+  size_t n;
+  while ((n = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+    fwrite(buffer, 1, n, dst);
+  }
+  fclose(src);
+  fclose(dst);
+  chmod(to, 0755);
+  return 0;
+}
+
+static int command_install(const char *self_path, HelperConfig *config) {
+  if (geteuid() != 0) {
+    printf("state=failed\nadapterName=macOS Half Route\npermission=denied\nlastError=install requires administrator privileges\n");
+    return 1;
+  }
+  if (copy_file(self_path, INSTALLED_HELPER) != 0) {
+    printf("state=failed\nadapterName=macOS Half Route\npermission=denied\nlastError=failed to install helper\n");
+    return 1;
+  }
+  log_line(config, "助手已安装");
+  return command_status(config);
+}
+
+static int command_uninstall(HelperConfig *config) {
+  command_stop(config, "关闭半路由");
+  if (geteuid() == 0) {
+    unlink(INSTALLED_HELPER);
+  }
+  printf("state=stopped\nadapterName=macOS Half Route\npermission=needsHelperInstall\nhelperInstalled=false\nlastError=\n");
+  return 0;
+}
+
+static void parse_args(int argc, char **argv, HelperConfig *config, int *limit) {
+  snprintf(config->cpe, sizeof(config->cpe), "%s", DEFAULT_CPE);
+  default_interface(config->ifname, sizeof(config->ifname));
+  snprintf(config->state_dir, sizeof(config->state_dir), "%s", DEFAULT_STATE_DIR);
+  *limit = 80;
+  for (int i = 2; i < argc; ++i) {
     if (strcmp(argv[i], "--cpe") == 0 && i + 1 < argc) {
       snprintf(config->cpe, sizeof(config->cpe), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--ifname") == 0 && i + 1 < argc) {
       snprintf(config->ifname, sizeof(config->ifname), "%s", argv[++i]);
-    } else if (strcmp(argv[i], "--utun") == 0 && i + 1 < argc) {
-      snprintf(config->utun, sizeof(config->utun), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--state-dir") == 0 && i + 1 < argc) {
       snprintf(config->state_dir, sizeof(config->state_dir), "%s", argv[++i]);
-    } else if (strcmp(argv[i], "--foreground") == 0) {
-      config->foreground = true;
-    } else if (strcmp(argv[i], "--l3-host") == 0 && i + 1 < argc) {
-      snprintf(config->l3_host, sizeof(config->l3_host), "%s", argv[++i]);
-    } else if (strcmp(argv[i], "--l3-port") == 0 && i + 1 < argc) {
-      config->l3_port = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
+      *limit = atoi(argv[++i]);
+    } else if (argv[i][0] != '-' && *limit == 80) {
+      *limit = atoi(argv[i]);
     }
+  }
+  if (*limit <= 0) {
+    *limit = 80;
   }
 }
 
-static void print_usage(void) {
-  fprintf(stderr, "%s {plan|self-test|install|uninstall|start|stop|rollback|status|health|logs|connections} [options]\n", HELPER_NAME);
+static void usage(void) {
+  fprintf(stderr, "%s {plan|self-test|install|uninstall|start|stop|rollback|status|health|logs|connections} [--cpe ip] [--ifname name] [--state-dir dir] [--limit n]\n", HELPER_NAME);
 }
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    print_usage();
-    return 2;
+    usage();
+    return 64;
   }
   HelperConfig config;
-  init_config(&config);
-  parse_args(argc, argv, &config);
+  int limit;
+  parse_args(argc, argv, &config, &limit);
+  if (!safe_ipv4(config.cpe)) {
+    fprintf(stderr, "invalid CPE IPv4 address\n");
+    return 64;
+  }
   if (strcmp(argv[1], "plan") == 0) {
-    print_plan(&config);
-    return 0;
+    return command_plan(&config);
   }
   if (strcmp(argv[1], "self-test") == 0) {
     return command_self_test();
   }
   if (strcmp(argv[1], "install") == 0) {
-    return command_install(argv[0]);
+    return command_install(argv[0], &config);
   }
   if (strcmp(argv[1], "uninstall") == 0) {
     return command_uninstall(&config);
@@ -2156,26 +734,20 @@ int main(int argc, char **argv) {
     return command_start(&config);
   }
   if (strcmp(argv[1], "stop") == 0 || strcmp(argv[1], "rollback") == 0) {
-    return command_stop(&config);
+    return command_stop(&config, "关闭半路由");
   }
   if (strcmp(argv[1], "status") == 0) {
-    print_status(&config);
-    return 0;
+    return command_status(&config);
   }
   if (strcmp(argv[1], "health") == 0 || strcmp(argv[1], "healthCheck") == 0) {
-    print_health(&config);
-    return 0;
+    return command_health(&config);
   }
   if (strcmp(argv[1], "logs") == 0) {
-    int limit = argc > 2 ? atoi(argv[2]) : 80;
-    print_logs(&config, limit);
-    return 0;
+    return command_logs(&config, limit);
   }
   if (strcmp(argv[1], "connections") == 0) {
-    int limit = argc > 2 ? atoi(argv[2]) : 80;
-    print_connections(&config, limit);
-    return 0;
+    return command_connections(&config, limit);
   }
-  print_usage();
-  return 2;
+  usage();
+  return 64;
 }

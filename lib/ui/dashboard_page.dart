@@ -24,7 +24,9 @@ class DashboardPage extends StatelessWidget {
         final status = tunController.status;
         final cpe = status.cpe;
         final running = status.state == TunState.running;
-        final directTun = status.adapterName.toUpperCase().contains('TUN');
+        final halfRoute =
+            status.adapterName.toLowerCase().contains('half route') ||
+            status.adapterName.contains('半路由');
         final canStart =
             !tunController.busy &&
             status.permission != TunPermission.unsupported &&
@@ -127,9 +129,9 @@ class DashboardPage extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             _NoteCard(
-              text: directTun
-                  ? 'IPv4 流量经虚拟网卡接管后转发到 CPE ${profile.cpeIp}，由 CPE 负责分流。'
-                        '若连续检测不到 CPE，将自动停止并回切本机直连，不改动物理网卡的网关与 DNS。'
+              text: halfRoute
+                  ? 'IPv4 流量通过系统半路由交给 CPE ${profile.cpeIp}，源 IP 保持不变，由 CPE 负责分流。'
+                        '若连续检测不到 CPE，将自动删除半路由并回切本机直连，本轮不改 DNS。'
                   : '当前入口为 ${status.adapterName}，需要本地 helper/service 数据面转发到 CPE ${profile.cpeIp}。'
                         '若连续检测不到 CPE，将自动停止并回切本机直连。',
             ),
@@ -157,8 +159,8 @@ class DashboardPage extends StatelessWidget {
   String _stateSubtitle(TunState state) {
     return switch (state) {
       TunState.autoRecovered => 'CPE 异常，已恢复本机直连',
-      TunState.running => '正在通过虚拟网卡接管流量',
-      TunState.starting => '正在建立虚拟网卡…',
+      TunState.running => '正在通过半路由交给 CPE',
+      TunState.starting => '正在配置半路由…',
       TunState.stopping => '正在恢复直连…',
       TunState.failed => '启动失败，请查看下方提示',
       TunState.stopped => '点击右侧按钮开启加速',

@@ -153,7 +153,7 @@ class TunController extends ChangeNotifier {
         if (!_status.helperInstalled) {
           _status = _status.copyWith(
             state: TunState.failed,
-            lastError: _status.lastError ?? '虚拟网卡助手未安装，无法开启加速',
+            lastError: _status.lastError ?? '半路由服务未安装，无法开启加速',
           );
           _stopPolling();
           return;

@@ -32,11 +32,15 @@ void main() {
     expect(File('linux/runner/resources/tray-idle.png').existsSync(), isTrue);
   });
 
-  test('Linux runner reports IPv4 TUN backend boundary explicitly', () {
+  test('Linux runner exposes half-route backend commands', () {
     final runner = read('linux/runner/my_application.cc');
 
-    expect(runner, contains('Linux IPv4 TUN backend is not wired yet'));
-    expect(runner, contains('IPv4 TUN 虚拟网卡'));
+    expect(runner, contains('Linux Half Route'));
+    expect(runner, contains('ip route replace 0.0.0.0/1 via'));
+    expect(runner, contains('ip route replace 128.0.0.0/1 via'));
+    expect(runner, contains('ip route del 0.0.0.0/1'));
+    expect(runner, contains('/proc/net/dev'));
+    expect(runner, contains('ss -tunp'));
   });
 
   test('Linux runner has a shutdown hook to stop acceleration before exit', () {

@@ -20,7 +20,7 @@ void main() {
           expect(call.method, 'status');
           return {
             'state': 'running',
-            'adapterName': 'Windows Wintun',
+            'adapterName': 'Windows Half Route',
             'permission': 'ready',
             'helperInstalled': true,
             'txBytes': 1024,
@@ -46,7 +46,7 @@ void main() {
     final status = await service.status();
 
     expect(status.state, TunState.running);
-    expect(status.adapterName, 'Windows Wintun');
+    expect(status.adapterName, 'Windows Half Route');
     expect(status.permission, TunPermission.ready);
     expect(status.helperInstalled, isTrue);
     expect(status.cpe.reachable, isTrue);
@@ -149,7 +149,7 @@ void main() {
           expect(call.method, 'logs');
           expect(call.arguments, {'limit': 2, 'cpeHost': '192.168.1.140'});
           return [
-            {'time': '2026-06-04 12:00:00', 'message': '开启 TUN'},
+            {'time': '2026-06-04 12:00:00', 'message': '开启半路由'},
             {'time': '2026-06-04 12:00:05', 'message': '自动回退'},
           ];
         });
@@ -159,7 +159,7 @@ void main() {
 
     expect(logs, hasLength(2));
     expect(logs.first.time, '2026-06-04 12:00:00');
-    expect(logs.first.message, '开启 TUN');
+    expect(logs.first.message, '开启半路由');
     expect(logs.last.message, '自动回退');
   });
 

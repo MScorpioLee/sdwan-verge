@@ -417,7 +417,7 @@ class CpeHealth {
 class TunStatus {
   const TunStatus({
     required this.mode,
-    this.adapterName = 'TUN 虚拟网卡',
+    this.adapterName = '半路由',
     required this.state,
     required this.permission,
     required this.cpe,
@@ -430,7 +430,7 @@ class TunStatus {
   factory TunStatus.defaults({String cpeHost = '192.168.1.140'}) {
     return TunStatus(
       mode: TunMode.tun,
-      adapterName: 'TUN 虚拟网卡',
+      adapterName: '半路由',
       state: TunState.stopped,
       permission: TunPermission.needsVpnConsent,
       cpe: CpeHealth(host: cpeHost, reachable: false),

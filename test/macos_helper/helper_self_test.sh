@@ -8,13 +8,13 @@ HELPER="$ROOT_DIR/build/macos/helper/sdwan-macos-helper"
 
 "$HELPER" self-test | grep -q "SELF_TEST_OK"
 
-PLAN_OUTPUT="$("$HELPER" plan --cpe 192.168.1.140 --ifname en0 --utun utun9)"
+PLAN_OUTPUT="$("$HELPER" plan --cpe 192.168.1.140 --ifname en0)"
 
-grep -q "/sbin/route -n add -host 192.168.1.140 -interface en0" <<<"$PLAN_OUTPUT"
-grep -q "/sbin/route -n add 0.0.0.0/1 -interface utun9" <<<"$PLAN_OUTPUT"
-grep -q "/sbin/route -n add 128.0.0.0/1 -interface utun9" <<<"$PLAN_OUTPUT"
-grep -q "/sbin/pfctl -a com.apple/sdwan-verge -f -" <<<"$PLAN_OUTPUT"
-grep -q "block in quick on en0 proto { tcp udp } from any to <physical_ip> port 42000:48999" <<<"$PLAN_OUTPUT"
+grep -q "/sbin/route -n add -net 0.0.0.0 -netmask 128.0.0.0 192.168.1.140" <<<"$PLAN_OUTPUT"
+grep -q "/sbin/route -n add -net 128.0.0.0 -netmask 128.0.0.0 192.168.1.140" <<<"$PLAN_OUTPUT"
+! grep -q "utun" <<<"$PLAN_OUTPUT"
+! grep -q "pfctl" <<<"$PLAN_OUTPUT"
+! grep -q "/dev/bpf" <<<"$PLAN_OUTPUT"
 grep -q "PLAN_ONLY_NO_CHANGES_APPLIED" <<<"$PLAN_OUTPUT"
 
 STATUS_OUTPUT="$("$HELPER" status)"
@@ -23,22 +23,16 @@ grep -q "tx_bytes=" <<<"$STATUS_OUTPUT"
 grep -q "rx_bytes=" <<<"$STATUS_OUTPUT"
 grep -q "tx_rate=" <<<"$STATUS_OUTPUT"
 grep -q "rx_rate=" <<<"$STATUS_OUTPUT"
-grep -q "tx_packets=" <<<"$STATUS_OUTPUT"
-grep -q "rx_packets=" <<<"$STATUS_OUTPUT"
-grep -q "tx_dropped=" <<<"$STATUS_OUTPUT"
-grep -q "rx_dropped=" <<<"$STATUS_OUTPUT"
-grep -q "nat_misses=" <<<"$STATUS_OUTPUT"
-grep -q "send_failures=" <<<"$STATUS_OUTPUT"
-grep -q "udp443_packets=" <<<"$STATUS_OUTPUT"
+grep -q "adapterName=macOS Half Route" <<<"$STATUS_OUTPUT"
 
 TMP_STATE="$(mktemp -d)"
 trap 'rm -rf "$TMP_STATE"' EXIT
 cat >"$TMP_STATE/events.log" <<'LOGS'
-1717473600 开启 TUN
+1717473600 开启半路由
 1717473605 自动回退
 LOGS
 LOG_OUTPUT="$("$HELPER" logs 2 --state-dir "$TMP_STATE")"
-grep -q "开启 TUN" <<<"$LOG_OUTPUT"
+grep -q "开启半路由" <<<"$LOG_OUTPUT"
 grep -q "自动回退" <<<"$LOG_OUTPUT"
 
 cat >"$TMP_STATE/connections" <<'CONNECTIONS'
