@@ -734,7 +734,7 @@ std::string PipeUnavailableStatus(const std::string& cpe) {
   out << "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\n";
   out << "txPackets=0\nrxPackets=0\ntxDropped=0\nrxDropped=0\n";
   out << "natMisses=0\nsendFailures=0\nudp443Packets=0\n";
-  out << "lastError=Windows helper service is not installed or not running\n";
+  out << "lastError=\n";
   return out.str();
 }
 

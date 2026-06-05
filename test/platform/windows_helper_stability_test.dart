@@ -36,6 +36,17 @@ void main() {
         lessThan(helper.indexOf('#include <icmpapi.h>')));
   });
 
+  test('Windows helper treats missing service as install-needed state', () {
+    final helper = readHelper();
+
+    expect(helper, contains('permission=needsHelperInstall'));
+    expect(helper, contains('helperInstalled=false'));
+    expect(
+      helper,
+      isNot(contains('Windows helper service is not installed or not running')),
+    );
+  });
+
   test('Windows health rollback is based on CPE reachability', () {
     final helper = readHelper();
 
