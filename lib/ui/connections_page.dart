@@ -71,7 +71,10 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
               },
             ),
             const SizedBox(height: 18),
-            _SummaryRow(connections: filteredConnections),
+            _SummaryRow(
+              connections: filteredConnections,
+              traffic: widget.tunController.status.traffic,
+            ),
             const SizedBox(height: 18),
             _BandwidthChartCard(
               samples: widget.tunController.trafficSamples,
@@ -173,25 +176,29 @@ class _FilterBar extends StatelessWidget {
 }
 
 class _SummaryRow extends StatelessWidget {
-  const _SummaryRow({required this.connections});
+  const _SummaryRow({required this.connections, required this.traffic});
 
   final List<TunConnection> connections;
+  final TrafficStats traffic;
 
   @override
   Widget build(BuildContext context) {
-    final txRate = connections.fold<int>(
+    final connectionTxRate = connections.fold<int>(
       0,
       (total, connection) => total + connection.txRate,
     );
-    final rxRate = connections.fold<int>(
+    final connectionRxRate = connections.fold<int>(
       0,
       (total, connection) => total + connection.rxRate,
     );
+    final txRate = connectionTxRate > 0 ? connectionTxRate : traffic.txRate;
+    final rxRate = connectionRxRate > 0 ? connectionRxRate : traffic.rxRate;
     final dnsCount = connections
         .where((connection) => connection.dnsRedirect)
         .length;
 
     return Row(
+      key: const ValueKey('connections-summary-row'),
       children: [
         Expanded(
           child: _MetricCard(label: '连接数', value: '${connections.length}'),

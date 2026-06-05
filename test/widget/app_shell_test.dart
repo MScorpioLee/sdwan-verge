@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/domain/app_config.dart';
 import 'package:sdwan_client/services/app_config_controller.dart';
 import 'package:sdwan_client/services/config_repository.dart';
+import 'package:sdwan_client/tun/domain_resolver.dart';
 import 'package:sdwan_client/tun/tun_controller.dart';
 import 'package:sdwan_client/tun/tun_models.dart';
 import 'package:sdwan_client/tun/tun_service.dart';
@@ -28,6 +29,13 @@ class FakeTunService implements TunService {
       reachable: true,
       serviceReady: true,
     ),
+    this.traffic = const TrafficStats(
+      txBytes: 1024,
+      rxBytes: 2048,
+      txRate: 128,
+      rxRate: 256,
+    ),
+    this.customConnectionLogs,
   });
 
   TunStatus? currentStatus;
@@ -35,11 +43,17 @@ class FakeTunService implements TunService {
   bool syncDnsWithAcceleration = false;
   bool launchAtLogin = false;
   final CpeHealth health;
+  final TrafficStats traffic;
+  final List<TunConnection>? customConnectionLogs;
   final List<TunEventLog> eventLogs = const [
     TunEventLog(time: '2026-06-04 12:00:00', message: '开启半路由'),
     TunEventLog(time: '2026-06-04 12:00:05', message: '自动回退'),
   ];
   List<TunConnection> get connectionLogs {
+    final customLogs = customConnectionLogs;
+    if (customLogs != null) {
+      return customLogs;
+    }
     final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
     return [
       TunConnection(
@@ -84,14 +98,7 @@ class FakeTunService implements TunService {
   Future<TunStatus> status() async {
     final status =
         currentStatus ??
-        TunStatus.defaults(cpeHost: cpeHost).copyWith(
-          traffic: const TrafficStats(
-            txBytes: 1024,
-            rxBytes: 2048,
-            txRate: 128,
-            rxRate: 256,
-          ),
-        );
+        TunStatus.defaults(cpeHost: cpeHost).copyWith(traffic: traffic);
     return status.copyWith(cpe: status.cpe.copyWith(host: cpeHost));
   }
 
@@ -160,6 +167,13 @@ class FakeTunService implements TunService {
       checkedAt: DateTime(2026, 6, 4, 12),
     );
   }
+}
+
+class EmptyDomainResolver implements DomainResolver {
+  const EmptyDomainResolver();
+
+  @override
+  Future<String?> reverseLookup(String ip) async => null;
 }
 
 void main() {
@@ -264,7 +278,10 @@ void main() {
     final store = MemoryConfigStore();
     final service = FakeTunService();
     final configController = AppConfigController(configStore: store);
-    final tunController = TunController(service: service);
+    final tunController = TunController(
+      service: service,
+      domainResolver: const EmptyDomainResolver(),
+    );
     await configController.initialize();
     await tunController.initialize();
 
@@ -287,6 +304,66 @@ void main() {
 
     expect(store.config.activeProfile.syncDnsWithAcceleration, isTrue);
     expect(service.syncDnsWithAcceleration, isTrue);
+  });
+
+  testWidgets('连接页单连接速率缺失时摘要使用接口总速率', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    final service = FakeTunService(
+      traffic: const TrafficStats(
+        txBytes: 64000,
+        rxBytes: 128000,
+        txRate: 321,
+        rxRate: 654,
+      ),
+      customConnectionLogs: [
+        TunConnection(
+          lastSeen: now,
+          proto: 'TCP',
+          source: '192.168.1.20:56000',
+          target: '142.250.72.14:443',
+          via: '142.250.72.14:443',
+          txBytes: 0,
+          rxBytes: 0,
+        ),
+      ],
+    );
+    final configController = AppConfigController(
+      configStore: MemoryConfigStore(),
+    );
+    final tunController = TunController(
+      service: service,
+      domainResolver: const EmptyDomainResolver(),
+    );
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('连接'));
+    await tester.pumpAndSettle();
+
+    final summary = find.byKey(const ValueKey('connections-summary-row'));
+    expect(summary, findsOneWidget);
+    expect(
+      find.descendant(of: summary, matching: find.text('321 B/s')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: summary, matching: find.text('654 B/s')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('后端不支持时禁用开启按钮并显示错误', (tester) async {
