@@ -13,10 +13,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -284,6 +286,44 @@ std::vector<std::string> BuildRouteDeleteCommands() {
   };
 }
 
+std::pair<int, int> Ipv4MappedPrefixPolicyFromSnapshot(
+    const std::string& snapshot) {
+  std::istringstream stream(snapshot);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (line.find("::ffff:0:0/96") == std::string::npos) {
+      continue;
+    }
+    const std::vector<std::string> parts = SplitWhitespace(line);
+    if (parts.size() < 3) {
+      continue;
+    }
+    const int precedence = std::atoi(parts[0].c_str());
+    const int label = std::atoi(parts[1].c_str());
+    if (precedence > 0 && label >= 0) {
+      return {precedence, label};
+    }
+  }
+  return {35, 4};
+}
+
+void PreferIpv4PrefixPolicy() {
+  RunCommand(
+      "netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 60 4 >NUL "
+      "2>NUL");
+}
+
+void RestoreIpv6PrefixPolicy() {
+  std::ifstream file(StatePath(L"initial-ipv6-prefixpolicies.txt"));
+  std::ostringstream snapshot;
+  snapshot << file.rdbuf();
+  const auto policy = Ipv4MappedPrefixPolicyFromSnapshot(snapshot.str());
+  std::ostringstream command;
+  command << "netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 "
+          << policy.first << " " << policy.second << " >NUL 2>NUL";
+  RunCommand(command.str());
+}
+
 bool ConfigureHalfRoutes(const std::string& cpe, std::string* error) {
   DeleteHalfRoutes();
   for (const std::string& command : BuildRouteAddCommands(cpe)) {
@@ -322,6 +362,8 @@ void SnapshotInitialState() {
   route_file << RunCommandCapture("route print -4");
   std::ofstream ip_file(StatePath(L"initial-ipconfig.txt"));
   ip_file << RunCommandCapture("ipconfig /all");
+  std::ofstream prefix_file(StatePath(L"initial-ipv6-prefixpolicies.txt"));
+  prefix_file << RunCommandCapture("netsh interface ipv6 show prefixpolicies");
 }
 
 bool PingCpe(const std::string& cpe) {
@@ -535,8 +577,10 @@ bool StartAcceleration(const std::string& cpe, std::string* response) {
   }
 
   SnapshotInitialState();
+  PreferIpv4PrefixPolicy();
   std::string route_error;
   if (!ConfigureHalfRoutes(cpe, &route_error)) {
+    RestoreIpv6PrefixPolicy();
     std::lock_guard<std::mutex> lock(g_runtime.mutex);
     g_runtime.state = RuntimeState::failed;
     g_runtime.last_error = route_error;
@@ -568,6 +612,7 @@ void StopAcceleration(const std::string& message, bool recovered) {
     g_runtime.health_thread.join();
   }
   DeleteHalfRoutes();
+  RestoreIpv6PrefixPolicy();
   {
     std::lock_guard<std::mutex> lock(g_runtime.mutex);
     UpdateTrafficLocked(&g_runtime);
@@ -708,12 +753,80 @@ bool IsPublicIpv4Endpoint(const std::string& endpoint) {
   return true;
 }
 
+std::string ToLowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](char ch) {
+    return static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  });
+  return value;
+}
+
+std::string NormalizeDomainName(std::string value) {
+  value = Trim(value);
+  while (!value.empty() && value.back() == '.') {
+    value.pop_back();
+  }
+  if (value.empty() || value.find('.') == std::string::npos ||
+      IsIpv4Address(value)) {
+    return "";
+  }
+  for (const char ch : value) {
+    const unsigned char byte = static_cast<unsigned char>(ch);
+    if (std::isspace(byte) || ch == '|' || ch == '=' || ch == ':' ||
+        ch == '[' || ch == ']') {
+      return "";
+    }
+  }
+  return ToLowerAscii(value);
+}
+
+std::map<std::string, std::string> DnsCacheDomainsByIp() {
+  const std::string output = RunCommandCapture("ipconfig /displaydns");
+  std::istringstream stream(output);
+  std::map<std::string, std::string> domains;
+  std::string current_domain;
+  std::string line;
+  while (std::getline(stream, line)) {
+    line = Trim(line);
+    if (line.empty() || line.find("---") != std::string::npos) {
+      continue;
+    }
+
+    const size_t colon = line.find(':');
+    std::string value = colon == std::string::npos
+                            ? line
+                            : Trim(line.substr(colon + 1));
+    value = Trim(value);
+    const std::string domain = NormalizeDomainName(value);
+    if (!domain.empty()) {
+      current_domain = domain;
+      continue;
+    }
+    if (IsIpv4Address(value) && !current_domain.empty()) {
+      domains[value] = current_domain;
+    }
+  }
+  return domains;
+}
+
+std::string DomainForTarget(
+    const std::string& target,
+    const std::map<std::string, std::string>& domains_by_ip) {
+  const std::string host = EndpointHost(target);
+  if (host.empty()) {
+    return "";
+  }
+  const auto found = domains_by_ip.find(host);
+  return found == domains_by_ip.end() ? "" : found->second;
+}
+
 std::string ConnectionsText(int limit) {
   if (limit <= 0) {
     limit = 80;
   }
   const std::string tcp = RunCommandCapture("netstat -ano -p tcp");
   const std::string udp = RunCommandCapture("netstat -ano -p udp");
+  const std::map<std::string, std::string> dns_cache = DnsCacheDomainsByIp();
   std::istringstream stream(tcp + "\n" + udp);
   std::ostringstream out;
   std::string line;
@@ -744,8 +857,9 @@ std::string ConnectionsText(int limit) {
         (parts[3] == "LISTENING" || parts[3] == "TIME_WAIT")) {
       continue;
     }
+    const std::string domain = DomainForTarget(target, dns_cache);
     out << "lastSeen=" << now << "|proto=" << proto << "|source=" << source
-        << "|target=" << target << "|domain=|via=" << target
+        << "|target=" << target << "|domain=" << domain << "|via=" << target
         << "|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n";
     count++;
   }
@@ -781,6 +895,9 @@ std::string SelfTestText() {
   out << "adapterName=" << kAdapterName << "\n";
   out << "txBytes=0\nrxBytes=0\ntxRate=0\nrxRate=0\n";
   out << "netstat -ano -p tcp\n";
+  out << "ipconfig /displaydns\n";
+  out << "netsh interface ipv6 show prefixpolicies\n";
+  out << "netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 60 4\n";
   out << "GetIfTable2\n";
   out << "if (!l1)\n";
   out << kRollbackMessage << "\n";
@@ -1069,6 +1186,7 @@ bool InstallService() {
 
 bool StopAndDeleteService() {
   DeleteHalfRoutes();
+  RestoreIpv6PrefixPolicy();
   SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (manager == nullptr) {
     return false;

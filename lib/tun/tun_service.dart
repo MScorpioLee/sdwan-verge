@@ -338,14 +338,20 @@ class MethodChannelTunService implements TunService {
     if (rawValue is! List) {
       return const [];
     }
-    return [
-      for (final item in rawValue)
-        if (_stringMap(item) case final value?)
-          TunEventLog(
-            time: value['time']?.toString() ?? '',
-            message: value['message']?.toString() ?? '',
-          ),
-    ];
+    final logs = <TunEventLog>[];
+    for (final item in rawValue) {
+      final value = _stringMap(item);
+      if (value == null) {
+        continue;
+      }
+      final time = value['time']?.toString().trim() ?? '';
+      final message = value['message']?.toString().trim() ?? '';
+      if (time.isEmpty || message.isEmpty) {
+        continue;
+      }
+      logs.add(TunEventLog(time: time, message: message));
+    }
+    return logs;
   }
 
   List<TunConnection> _connectionsFromList(Object? rawValue) {

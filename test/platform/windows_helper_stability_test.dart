@@ -45,6 +45,35 @@ void main() {
     expect(helper, contains('if (!IsPublicIpv4Endpoint(target))'));
   });
 
+  test('Windows helper prefers IPv4 while acceleration is running', () {
+    final helper = readHelper();
+
+    expect(helper, contains('netsh interface ipv6 show prefixpolicies'));
+    expect(
+      helper,
+      contains('netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 60 4'),
+    );
+    expect(helper, contains('RestoreIpv6PrefixPolicy'));
+    final startIndex = helper.indexOf('bool StartAcceleration');
+    final startAcceleration = helper.substring(
+      startIndex,
+      helper.indexOf('void StopAcceleration', startIndex),
+    );
+    expect(
+      startAcceleration.indexOf('PreferIpv4PrefixPolicy();'),
+      lessThan(startAcceleration.indexOf('ConfigureHalfRoutes(cpe')),
+    );
+  });
+
+  test('Windows helper enriches connection domains from DNS cache', () {
+    final helper = readHelper();
+
+    expect(helper, contains('ipconfig /displaydns'));
+    expect(helper, contains('DnsCacheDomainsByIp'));
+    expect(helper, contains('DomainForTarget'));
+    expect(helper, contains('|domain=" << domain'));
+  });
+
   test('Windows helper keeps SDK headers in a warning-clean order', () {
     final helper = readHelper();
 

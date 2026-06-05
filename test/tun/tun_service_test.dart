@@ -222,6 +222,8 @@ void main() {
           expect(call.arguments, {'limit': 2, 'cpeHost': '192.168.1.140'});
           return [
             {'time': '2026-06-04 12:00:00', 'message': '开启半路由'},
+            {'time': '', 'message': ''},
+            {'time': '2026-06-04 12:00:03', 'message': ''},
             {'time': '2026-06-04 12:00:05', 'message': '自动回退'},
           ];
         });
