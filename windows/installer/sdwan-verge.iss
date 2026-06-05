@@ -18,6 +18,8 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: ".\ChineseSimplified.isl"
@@ -27,7 +29,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace
 
 [Icons]
 Name: "{group}\SD-WAN Verge"; Filename: "{app}\sdwan_client.exe"
@@ -39,3 +41,51 @@ Filename: "{app}\sdwan_client.exe"; Description: "{cm:LaunchProgram,SD-WAN Verge
 
 [UninstallRun]
 Filename: "{app}\sdwan_windows_helper.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated
+
+[Code]
+procedure RunHidden(FileName: String; Parameters: String);
+var
+  ResultCode: Integer;
+begin
+  Exec(FileName, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure KillProcess(ImageName: String);
+begin
+  RunHidden(ExpandConstant('{sys}\taskkill.exe'), '/IM "' + ImageName + '" /T /F');
+end;
+
+procedure StopService(ServiceName: String);
+begin
+  RunHidden(ExpandConstant('{sys}\sc.exe'), 'stop "' + ServiceName + '"');
+end;
+
+procedure RunExistingHelper(Command: String);
+var
+  HelperPath: String;
+begin
+  HelperPath := ExpandConstant('{app}\sdwan_windows_helper.exe');
+  if FileExists(HelperPath) then begin
+    RunHidden(HelperPath, Command);
+  end;
+end;
+
+procedure StopWinDivertDrivers();
+begin
+  StopService('WinDivert');
+  StopService('WinDivert64');
+  StopService('WinDivert1.4');
+  StopService('WinDivert1.3');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  KillProcess('sdwan_client.exe');
+  RunExistingHelper('stop');
+  RunExistingHelper('uninstall');
+  StopService('SDWANVergeHelper');
+  KillProcess('sdwan_windows_helper.exe');
+  StopWinDivertDrivers();
+  Sleep(1500);
+  Result := '';
+end;
