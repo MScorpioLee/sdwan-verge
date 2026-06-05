@@ -1110,6 +1110,14 @@ class _ConnectionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final domain = connection.domain;
     final hasDomain = domain != null && domain.isNotEmpty;
+    final via = connection.via.trim();
+    final detailParts = <String>['入口 ${connection.source}'];
+    if (via.isNotEmpty && via != connection.target) {
+      detailParts.add('出口 $via');
+    }
+    if (connection.dnsRedirect) {
+      detailParts.add('DNS->CPE');
+    }
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 10),
       decoration: const BoxDecoration(
@@ -1150,8 +1158,7 @@ class _ConnectionTile extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   '${hasDomain ? '${connection.target}  ' : ''}'
-                  '入口 ${connection.source}  出口 ${connection.via}'
-                  '${connection.dnsRedirect ? '  DNS->CPE' : ''}',
+                  '${detailParts.join('  ')}',
                   style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.textSecondary,

@@ -276,35 +276,50 @@ std::string StateName(RuntimeState state) {
   }
 }
 
-bool ReadInterfaceCounters(uint64_t* tx, uint64_t* rx) {
+bool ResolveCpeInterfaceIndex(const std::string& cpe, DWORD* if_index) {
+  if (if_index == nullptr) {
+    return false;
+  }
+  IN_ADDR address = {};
+  if (InetPtonA(AF_INET, cpe.c_str(), &address) != 1) {
+    return false;
+  }
+  return GetBestInterface(address.S_un.S_addr, if_index) == NO_ERROR;
+}
+
+bool ReadInterfaceCounters(const std::string& cpe, uint64_t* tx, uint64_t* rx) {
   *tx = 0;
   *rx = 0;
+  DWORD cpe_if_index = 0;
+  if (!ResolveCpeInterfaceIndex(cpe.empty() ? kDefaultCpe : cpe,
+                                &cpe_if_index)) {
+    return false;
+  }
   PMIB_IF_TABLE2 table = nullptr;
   if (GetIfTable2(&table) != NO_ERROR || table == nullptr) {
     return false;
   }
+  bool found = false;
   for (ULONG i = 0; i < table->NumEntries; ++i) {
     const MIB_IF_ROW2& row = table->Table[i];
-    if (row.OperStatus != IfOperStatusUp) {
+    if (row.InterfaceIndex != cpe_if_index) {
       continue;
     }
-    if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) {
-      continue;
+    if (row.OperStatus == IfOperStatusUp) {
+      *tx = row.OutOctets;
+      *rx = row.InOctets;
+      found = true;
     }
-    if (!row.InterfaceAndOperStatusFlags.HardwareInterface) {
-      continue;
-    }
-    *tx += row.OutOctets;
-    *rx += row.InOctets;
+    break;
   }
   FreeMibTable(table);
-  return true;
+  return found;
 }
 
 void UpdateTrafficLocked(Runtime* runtime) {
   uint64_t tx_total = 0;
   uint64_t rx_total = 0;
-  if (!ReadInterfaceCounters(&tx_total, &rx_total)) {
+  if (!ReadInterfaceCounters(runtime->cpe, &tx_total, &rx_total)) {
     return;
   }
   const uint64_t now = NowMs();
@@ -331,7 +346,7 @@ void UpdateTrafficLocked(Runtime* runtime) {
 void ResetTrafficBaselineLocked(Runtime* runtime) {
   uint64_t tx_total = 0;
   uint64_t rx_total = 0;
-  ReadInterfaceCounters(&tx_total, &rx_total);
+  ReadInterfaceCounters(runtime->cpe, &tx_total, &rx_total);
   runtime->base_tx = tx_total;
   runtime->base_rx = rx_total;
   runtime->last_tx_total = tx_total;
@@ -955,7 +970,7 @@ std::string ConnectionsText(int limit) {
     }
     const std::string domain = DomainForTarget(target, dns_cache);
     out << "lastSeen=" << now << "|proto=" << proto << "|source=" << source
-        << "|target=" << target << "|domain=" << domain << "|via=" << target
+        << "|target=" << target << "|domain=" << domain << "|via="
         << "|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n";
     count++;
   }

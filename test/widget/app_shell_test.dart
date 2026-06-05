@@ -366,6 +366,53 @@ void main() {
     );
   });
 
+  testWidgets('连接页不重复显示与目标相同的出口', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    final service = FakeTunService(
+      customConnectionLogs: [
+        TunConnection(
+          lastSeen: now,
+          proto: 'TCP',
+          source: '192.168.1.20:56000',
+          target: '142.250.72.14:443',
+          via: '142.250.72.14:443',
+          txBytes: 0,
+          rxBytes: 0,
+        ),
+      ],
+    );
+    final configController = AppConfigController(
+      configStore: MemoryConfigStore(),
+    );
+    final tunController = TunController(
+      service: service,
+      domainResolver: const EmptyDomainResolver(),
+    );
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('连接'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('142.250.72.14:443'), findsWidgets);
+    expect(find.textContaining('出口 142.250.72.14:443'), findsNothing);
+    expect(find.textContaining('入口 192.168.1.20:56000'), findsOneWidget);
+  });
+
   testWidgets('后端不支持时禁用开启按钮并显示错误', (tester) async {
     tester.view.physicalSize = const Size(1200, 2000);
     tester.view.devicePixelRatio = 1.0;

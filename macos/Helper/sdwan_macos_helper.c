@@ -23,12 +23,15 @@ typedef struct {
   char cpe[64];
   char ifname[64];
   char state_dir[PATH_MAX];
+  bool ifname_pinned;
 } HelperConfig;
 
 typedef struct {
   uint64_t tx_total;
   uint64_t rx_total;
 } TrafficCounters;
+
+static char *capture_command(const char *command);
 
 static bool safe_ipv4(const char *value) {
   struct in_addr address;
@@ -111,6 +114,37 @@ static bool public_ipv4_endpoint(const char *value) {
     return false;
   }
   return true;
+}
+
+static bool domain_for_target(const char *endpoint, char *out, size_t out_size) {
+  if (out_size == 0) {
+    return false;
+  }
+  out[0] = '\0';
+  char host[128];
+  if (!endpoint_host(endpoint, host, sizeof(host))) {
+    return false;
+  }
+  char command[256];
+  snprintf(command, sizeof(command),
+           "/usr/bin/dscacheutil -q host -a ip_address %s 2>/dev/null", host);
+  char *text = capture_command(command);
+  bool found = false;
+  char *cursor = text;
+  while (cursor != NULL && *cursor != '\0') {
+    char *line = strsep(&cursor, "\n");
+    if (line == NULL) {
+      break;
+    }
+    char name[256];
+    if (sscanf(line, "name: %255s", name) == 1 && strcmp(name, host) != 0) {
+      snprintf(out, out_size, "%s", name);
+      found = true;
+      break;
+    }
+  }
+  free(text);
+  return found;
 }
 
 static void ensure_state_dir(const HelperConfig *config) {
@@ -295,8 +329,14 @@ static void write_state(const HelperConfig *config,
   chmod(path, 0666);
 }
 
-static bool default_interface(char *out, size_t out_size) {
-  char *text = capture_command("/sbin/route -n get default 2>/dev/null");
+static bool default_interface_for_cpe(const char *cpe, char *out, size_t out_size) {
+  if (!safe_ipv4(cpe)) {
+    snprintf(out, out_size, "%s", "en0");
+    return false;
+  }
+  char command[256];
+  snprintf(command, sizeof(command), "/sbin/route -n get %s 2>/dev/null", cpe);
+  char *text = capture_command(command);
   bool found = false;
   char *cursor = text;
   while (cursor != NULL && *cursor != '\0') {
@@ -545,7 +585,6 @@ static int command_start(HelperConfig *config) {
     printf("state=failed\nadapterName=macOS Half Route\npermission=denied\nlastError=start requires administrator privileges\n");
     return 1;
   }
-  default_interface(config->ifname, sizeof(config->ifname));
   snapshot_initial_state(config);
   TrafficCounters counters;
   read_traffic_counters(config->ifname, &counters);
@@ -610,7 +649,10 @@ static int command_status(HelperConfig *config) {
   if (strcmp(state, "running") == 0 && !pid_alive(pid)) {
     snprintf(state, sizeof(state), "%s", "stopped");
   }
-  default_interface(config->ifname, sizeof(config->ifname));
+  if (!read_state_value(config, "ifname", config->ifname, sizeof(config->ifname)) &&
+      !config->ifname_pinned) {
+    default_interface_for_cpe(config->cpe, config->ifname, sizeof(config->ifname));
+  }
   update_traffic_state(config, state, read_state_u64(config, "last_sample_ms") == 0 ? "" : "");
   bool l1 = ping_cpe(config->cpe);
   printf("state=%s\n", state);
@@ -700,8 +742,10 @@ static void print_system_connections(int limit) {
     if (!ipv4_endpoint(local) || !public_ipv4_endpoint(foreign)) {
       continue;
     }
-    printf("lastSeen=%s|proto=%s|source=%s|target=%s|domain=|via=%s|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n",
-           ts, strncmp(proto, "tcp", 3) == 0 ? "TCP" : "UDP", local, foreign, foreign);
+    char domain[256];
+    domain_for_target(foreign, domain, sizeof(domain));
+    printf("lastSeen=%s|proto=%s|source=%s|target=%s|domain=%s|via=|txBytes=0|rxBytes=0|txRate=0|rxRate=0|dnsRedirect=false\n",
+           ts, strncmp(proto, "tcp", 3) == 0 ? "TCP" : "UDP", local, foreign, domain);
     count++;
   }
   free(text);
@@ -762,14 +806,16 @@ static int command_uninstall(HelperConfig *config) {
 
 static void parse_args(int argc, char **argv, HelperConfig *config, int *limit) {
   snprintf(config->cpe, sizeof(config->cpe), "%s", DEFAULT_CPE);
-  default_interface(config->ifname, sizeof(config->ifname));
+  snprintf(config->ifname, sizeof(config->ifname), "%s", "en0");
   snprintf(config->state_dir, sizeof(config->state_dir), "%s", DEFAULT_STATE_DIR);
+  config->ifname_pinned = false;
   *limit = 80;
   for (int i = 2; i < argc; ++i) {
     if (strcmp(argv[i], "--cpe") == 0 && i + 1 < argc) {
       snprintf(config->cpe, sizeof(config->cpe), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--ifname") == 0 && i + 1 < argc) {
       snprintf(config->ifname, sizeof(config->ifname), "%s", argv[++i]);
+      config->ifname_pinned = true;
     } else if (strcmp(argv[i], "--state-dir") == 0 && i + 1 < argc) {
       snprintf(config->state_dir, sizeof(config->state_dir), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
@@ -780,6 +826,9 @@ static void parse_args(int argc, char **argv, HelperConfig *config, int *limit) 
   }
   if (*limit <= 0) {
     *limit = 80;
+  }
+  if (!config->ifname_pinned) {
+    default_interface_for_cpe(config->cpe, config->ifname, sizeof(config->ifname));
   }
 }
 

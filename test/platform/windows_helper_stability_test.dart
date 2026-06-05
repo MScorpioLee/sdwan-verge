@@ -28,6 +28,16 @@ void main() {
     expect(helper, contains('GetIfTable2'));
   });
 
+  test('Windows helper reads traffic only from the CPE egress interface', () {
+    final helper = readHelper();
+
+    expect(helper, contains('GetBestInterface'));
+    expect(helper, contains('ResolveCpeInterfaceIndex'));
+    expect(helper, contains('ReadInterfaceCounters(const std::string& cpe'));
+    expect(helper, isNot(contains('*tx += row.OutOctets;')));
+    expect(helper, isNot(contains('*rx += row.InOctets;')));
+  });
+
   test('Windows helper keeps route and connection diagnostics IPv4 only', () {
     final helper = readHelper();
 
@@ -72,6 +82,12 @@ void main() {
     expect(helper, contains('DnsCacheDomainsByIp'));
     expect(helper, contains('DomainForTarget'));
     expect(helper, contains('|domain=" << domain'));
+  });
+
+  test('Windows helper does not duplicate target as connection via', () {
+    final helper = readHelper();
+
+    expect(helper, isNot(contains('|via=" << target')));
   });
 
   test('Windows helper can temporarily point DNS to CPE and restore it', () {
