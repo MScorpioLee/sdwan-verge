@@ -279,6 +279,15 @@ class MethodChannelTunService implements TunService {
         txRate: _intFromValue(value['txRate']),
         rxRate: _intFromValue(value['rxRate']),
       ),
+      diagnostics: TunDiagnostics(
+        txPackets: _intFromValue(value['txPackets']),
+        rxPackets: _intFromValue(value['rxPackets']),
+        txDropped: _intFromValue(value['txDropped']),
+        rxDropped: _intFromValue(value['rxDropped']),
+        natMisses: _intFromValue(value['natMisses']),
+        sendFailures: _intFromValue(value['sendFailures']),
+        udp443Packets: _intFromValue(value['udp443Packets']),
+      ),
       lastError: recoveredButHealthy ? null : value['lastError'] as String?,
     );
   }

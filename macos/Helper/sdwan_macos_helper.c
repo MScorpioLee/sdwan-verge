@@ -54,7 +54,7 @@
 #define INSTALLED_HELPER_PATH "/Library/PrivilegedHelperTools/com.sdwan.verge.helper"
 #define MAX_PACKET 2000
 #define MAX_FRAME 2200
-#define MAX_NAT 4096
+#define MAX_NAT 16384
 #define MAX_DNS_CACHE 2048
 #define HEARTBEAT_TIMEOUT_SEC 30
 #define HEALTH_INTERVAL_SEC 2
@@ -62,7 +62,7 @@
 #define TUN_MTU 1400
 #define TCP_MSS_CLAMP 1360
 #define NAT_PORT_START 42000
-#define NAT_PORT_END 42999
+#define NAT_PORT_END 48999
 
 typedef struct {
   char cpe[64];
@@ -135,6 +135,13 @@ typedef struct {
   uint64_t last_tx_bytes;
   uint64_t last_rx_bytes;
   time_t last_rate_at;
+  uint64_t tx_packets;
+  uint64_t rx_packets;
+  uint64_t tx_dropped;
+  uint64_t rx_dropped;
+  uint64_t nat_misses;
+  uint64_t send_failures;
+  uint64_t udp443_packets;
   NatTable nat;
 } Runtime;
 
@@ -498,6 +505,13 @@ static bool parse_ipv4_ports(const uint8_t *packet, size_t len, uint16_t *src_po
     return true;
   }
   return false;
+}
+
+static bool is_udp443_packet(const uint8_t *packet, size_t len) {
+  uint16_t src_port = 0;
+  uint16_t dst_port = 0;
+  return len >= 20 && (packet[0] >> 4) == 4 && packet[9] == IPPROTO_UDP &&
+         parse_ipv4_ports(packet, len, &src_port, &dst_port) && dst_port == 443;
 }
 
 static bool write_ipv4_src_port(uint8_t *packet, size_t len, uint16_t port) {
@@ -1112,14 +1126,20 @@ static void cleanup_pf(Runtime *runtime) {
 }
 
 static void write_state(Runtime *runtime, const char *state, const char *message) {
-  char content[2048];
+  char content[3072];
   snprintf(content, sizeof(content),
            "pid=%d\nstate=%s\nadapterName=IPv4 TUN 虚拟网卡\npermission=ready\ncpe=%s\nifname=%s\nutun=%s\n"
-           "message=%s\ntx_bytes=%llu\nrx_bytes=%llu\ntx_rate=%llu\nrx_rate=%llu\n",
+           "message=%s\ntx_bytes=%llu\nrx_bytes=%llu\ntx_rate=%llu\nrx_rate=%llu\n"
+           "tx_packets=%llu\nrx_packets=%llu\ntx_dropped=%llu\nrx_dropped=%llu\n"
+           "nat_misses=%llu\nsend_failures=%llu\nudp443_packets=%llu\n",
            getpid(), state, runtime->config.cpe, runtime->physical_ifname,
            runtime->utun_ifname, message == NULL ? "" : message,
            (unsigned long long)runtime->tx_bytes, (unsigned long long)runtime->rx_bytes,
-           (unsigned long long)runtime->tx_rate, (unsigned long long)runtime->rx_rate);
+           (unsigned long long)runtime->tx_rate, (unsigned long long)runtime->rx_rate,
+           (unsigned long long)runtime->tx_packets, (unsigned long long)runtime->rx_packets,
+           (unsigned long long)runtime->tx_dropped, (unsigned long long)runtime->rx_dropped,
+           (unsigned long long)runtime->nat_misses, (unsigned long long)runtime->send_failures,
+           (unsigned long long)runtime->udp443_packets);
   write_text_file(runtime->state_file, content);
 }
 
@@ -1348,19 +1368,27 @@ static bool write_packet_to_utun(int tun_fd, const uint8_t *packet, size_t len) 
 
 static void process_utun_packet(Runtime *runtime, const uint8_t *buffer, size_t len) {
   if (len <= 4 || len - 4 > MAX_PACKET) {
+    runtime->tx_dropped++;
     return;
   }
   if (read_u32(buffer) != AF_INET) {
+    runtime->tx_dropped++;
     return;
   }
   uint8_t packet[MAX_PACKET];
   memcpy(packet, buffer + 4, len - 4);
   size_t packet_len = len - 4;
   if ((packet[0] >> 4) != 4) {
+    runtime->tx_dropped++;
     return;
+  }
+  runtime->tx_packets++;
+  if (is_udp443_packet(packet, packet_len)) {
+    runtime->udp443_packets++;
   }
   if (!nat_translate_outgoing(&runtime->nat, packet, packet_len,
                               runtime->physical_ip, runtime->cpe_ip)) {
+    runtime->tx_dropped++;
     return;
   }
   uint8_t frame[MAX_FRAME];
@@ -1369,7 +1397,12 @@ static void process_utun_packet(Runtime *runtime, const uint8_t *buffer, size_t 
   if (frame_len > 0) {
     if (write(runtime->bpf_fd, frame, frame_len) == (ssize_t)frame_len) {
       runtime->tx_bytes += packet_len;
+    } else {
+      runtime->send_failures++;
+      runtime->tx_dropped++;
     }
+  } else {
+    runtime->tx_dropped++;
   }
 }
 
@@ -1383,14 +1416,20 @@ static void process_bpf_frame(Runtime *runtime, const uint8_t *frame, size_t len
   uint8_t packet[MAX_PACKET];
   size_t packet_len = len - 14;
   if (packet_len > sizeof(packet)) {
+    runtime->rx_dropped++;
     return;
   }
   memcpy(packet, frame + 14, packet_len);
+  runtime->rx_packets++;
   if (!nat_translate_incoming(&runtime->nat, packet, packet_len, runtime->physical_ip)) {
+    runtime->nat_misses++;
+    runtime->rx_dropped++;
     return;
   }
   if (write_packet_to_utun(runtime->tun_fd, packet, packet_len)) {
     runtime->rx_bytes += packet_len;
+  } else {
+    runtime->rx_dropped++;
   }
 }
 
@@ -1572,14 +1611,14 @@ static int command_start(HelperConfig *config) {
     perror("utun");
     return start_fail(&g_runtime, "failed to create utun", true);
   }
-  if (!configure_routes(&g_runtime)) {
-    return start_fail(&g_runtime, "failed to configure routes", true);
-  }
   unsigned int bpf_len = 0;
   g_runtime.bpf_fd = open_bpf(g_runtime.physical_ifname, &bpf_len);
   if (g_runtime.bpf_fd < 0) {
     perror("bpf");
     return start_fail(&g_runtime, "failed to open bpf", true);
+  }
+  if (!configure_routes(&g_runtime)) {
+    return start_fail(&g_runtime, "failed to configure routes", true);
   }
   write_state(&g_runtime, "running", "running");
   return data_loop(&g_runtime);
@@ -1701,6 +1740,13 @@ static void print_status(HelperConfig *config) {
   char rx_bytes[64] = "0";
   char tx_rate[64] = "0";
   char rx_rate[64] = "0";
+  char tx_packets[64] = "0";
+  char rx_packets[64] = "0";
+  char tx_dropped[64] = "0";
+  char rx_dropped[64] = "0";
+  char nat_misses[64] = "0";
+  char send_failures[64] = "0";
+  char udp443_packets[64] = "0";
   char permission[64] = "ready";
   path_join(state_file, sizeof(state_file), config->state_dir, "state");
   path_join(heartbeat_file, sizeof(heartbeat_file), config->state_dir, "heartbeat");
@@ -1711,6 +1757,13 @@ static void print_status(HelperConfig *config) {
   (void)read_state_value(state_file, "rx_bytes", rx_bytes, sizeof(rx_bytes));
   (void)read_state_value(state_file, "tx_rate", tx_rate, sizeof(tx_rate));
   (void)read_state_value(state_file, "rx_rate", rx_rate, sizeof(rx_rate));
+  (void)read_state_value(state_file, "tx_packets", tx_packets, sizeof(tx_packets));
+  (void)read_state_value(state_file, "rx_packets", rx_packets, sizeof(rx_packets));
+  (void)read_state_value(state_file, "tx_dropped", tx_dropped, sizeof(tx_dropped));
+  (void)read_state_value(state_file, "rx_dropped", rx_dropped, sizeof(rx_dropped));
+  (void)read_state_value(state_file, "nat_misses", nat_misses, sizeof(nat_misses));
+  (void)read_state_value(state_file, "send_failures", send_failures, sizeof(send_failures));
+  (void)read_state_value(state_file, "udp443_packets", udp443_packets, sizeof(udp443_packets));
   if (strcmp(state, "running") != 0) {
     snprintf(tx_rate, sizeof(tx_rate), "0");
     snprintf(rx_rate, sizeof(rx_rate), "0");
@@ -1735,6 +1788,13 @@ static void print_status(HelperConfig *config) {
   printf("rx_bytes=%s\n", rx_bytes);
   printf("tx_rate=%s\n", tx_rate);
   printf("rx_rate=%s\n", rx_rate);
+  printf("tx_packets=%s\n", tx_packets);
+  printf("rx_packets=%s\n", rx_packets);
+  printf("tx_dropped=%s\n", tx_dropped);
+  printf("rx_dropped=%s\n", rx_dropped);
+  printf("nat_misses=%s\n", nat_misses);
+  printf("send_failures=%s\n", send_failures);
+  printf("udp443_packets=%s\n", udp443_packets);
   printf("lastError=%s\n", message);
 }
 
@@ -1869,7 +1929,7 @@ static void append_udp_payload(uint8_t *packet, size_t *len, const uint8_t *payl
 static int command_self_test(void) {
   uint8_t packet[64];
   size_t len = 0;
-  NatTable table;
+  static NatTable table;
   memset(&table, 0, sizeof(table));
   uint32_t tun_ip = 0x0aff0002;      // 10.255.0.2
   uint32_t physical_ip = 0xc0a80158; // 192.168.1.88
@@ -1918,7 +1978,7 @@ static int command_self_test(void) {
     fprintf(stderr, "destination port restore failed\n");
     return 1;
   }
-  NatTable icmp_table;
+  static NatTable icmp_table;
   memset(&icmp_table, 0, sizeof(icmp_table));
   make_icmp_packet(packet, &len, tun_ip, remote_ip, 8, 0x1234, 1);
   if (!nat_translate_outgoing(&icmp_table, packet, len, physical_ip, cpe_ip)) {
@@ -1956,7 +2016,7 @@ static int command_self_test(void) {
     fprintf(stderr, "tcp mss clamp failed\n");
     return 1;
   }
-  NatTable dns_table;
+  static NatTable dns_table;
   memset(&dns_table, 0, sizeof(dns_table));
   const uint8_t dns_query_payload[] = {
       0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
@@ -2023,7 +2083,7 @@ static int command_self_test(void) {
     fprintf(stderr, "dns probe query failed\n");
     return 1;
   }
-  Runtime rate_runtime;
+  static Runtime rate_runtime;
   memset(&rate_runtime, 0, sizeof(rate_runtime));
   rate_runtime.tx_bytes = 1500;
   rate_runtime.rx_bytes = 3000;

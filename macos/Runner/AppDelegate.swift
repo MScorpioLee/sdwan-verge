@@ -253,6 +253,13 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
         "rxBytes": 0,
         "txRate": 0,
         "rxRate": 0,
+        "txPackets": 0,
+        "rxPackets": 0,
+        "txDropped": 0,
+        "rxDropped": 0,
+        "natMisses": 0,
+        "sendFailures": 0,
+        "udp443Packets": 0,
       ]
       if installedHelperNeedsUpdate() {
         status["lastError"] = "助手版本已更新，请重新授权安装"
@@ -350,6 +357,13 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "rxBytes": intFromPair(pairs["rx_bytes"]),
       "txRate": intFromPair(pairs["tx_rate"]),
       "rxRate": intFromPair(pairs["rx_rate"]),
+      "txPackets": intFromPair(pairs["tx_packets"]),
+      "rxPackets": intFromPair(pairs["rx_packets"]),
+      "txDropped": intFromPair(pairs["tx_dropped"]),
+      "rxDropped": intFromPair(pairs["rx_dropped"]),
+      "natMisses": intFromPair(pairs["nat_misses"]),
+      "sendFailures": intFromPair(pairs["send_failures"]),
+      "udp443Packets": intFromPair(pairs["udp443_packets"]),
     ]
     if let lastError = pairs["lastError"] ?? pairs["message"],
        !lastError.isEmpty,

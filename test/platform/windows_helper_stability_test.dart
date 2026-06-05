@@ -11,10 +11,36 @@ void main() {
 
     expect(helper, contains('constexpr int kTunMtu = 1400;'));
     expect(helper, contains('constexpr uint16_t kTcpMssClamp = 1360;'));
+    expect(helper, contains('constexpr uint16_t kNatPortEnd = 48999;'));
+    expect(helper, contains('constexpr size_t kMaxNat = 16384;'));
     expect(helper, contains('netsh interface ipv4 set subinterface'));
     expect(helper, contains('mtu=1400'));
     expect(helper, contains('ClampTcpMss'));
     expect(helper, contains('IsIpv4Packet'));
+  });
+
+  test(
+    'Windows helper starts packet loops before installing capture routes',
+    () {
+      final helper = readHelper();
+
+      expect(
+        helper.indexOf('std::thread(TunReadLoop'),
+        lessThan(helper.indexOf('if (!ConfigureWintunRoutes')),
+      );
+      expect(helper, contains('ConfigureWintunAddress'));
+      expect(helper, contains('ConfigureWintunRoutes'));
+    },
+  );
+
+  test('Windows helper exposes data plane diagnostic counters', () {
+    final helper = readHelper();
+
+    expect(helper, contains('txDropped='));
+    expect(helper, contains('rxDropped='));
+    expect(helper, contains('natMisses='));
+    expect(helper, contains('sendFailures='));
+    expect(helper, contains('udp443Packets='));
   });
 
   test('Windows health rollback is based on CPE reachability', () {

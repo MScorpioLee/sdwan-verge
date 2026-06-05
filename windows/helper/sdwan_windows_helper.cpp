@@ -38,8 +38,8 @@ constexpr int kPhysicalEgressRouteMetric = 50;
 constexpr int kTunMtu = 1400;
 constexpr uint16_t kTcpMssClamp = 1360;
 constexpr uint16_t kNatPortStart = 42000;
-constexpr uint16_t kNatPortEnd = 42999;
-constexpr size_t kMaxNat = 4096;
+constexpr uint16_t kNatPortEnd = 48999;
+constexpr size_t kMaxNat = 16384;
 constexpr size_t kMaxDnsCache = 512;
 
 using WINTUN_ADAPTER_HANDLE = void*;
@@ -157,6 +157,13 @@ struct Runtime {
   uint64_t tx_rate = 0;
   uint64_t rx_rate = 0;
   time_t last_rate_at = 0;
+  uint64_t tx_packets = 0;
+  uint64_t rx_packets = 0;
+  uint64_t tx_dropped = 0;
+  uint64_t rx_dropped = 0;
+  uint64_t nat_misses = 0;
+  uint64_t send_failures = 0;
+  uint64_t udp443_packets = 0;
   int health_failures = 0;
   int l3_failures = 0;
   WintunApi wintun;
@@ -448,6 +455,13 @@ bool ParseIpv4Ports(const uint8_t* packet, size_t len, uint16_t* src_port, uint1
     return true;
   }
   return false;
+}
+
+bool IsUdp443Packet(const uint8_t* packet, size_t len) {
+  uint16_t src_port = 0;
+  uint16_t dst_port = 0;
+  return IsIpv4Packet(packet, len) && packet[9] == IPPROTO_UDP &&
+         ParseIpv4Ports(packet, len, &src_port, &dst_port) && dst_port == 443;
 }
 
 bool WriteIpv4SrcPort(uint8_t* packet, size_t len, uint16_t port) {
@@ -1069,11 +1083,9 @@ void CleanupRoutes(Runtime* runtime) {
   runtime->route_physical_name.clear();
 }
 
-bool ConfigureWintunAddressAndRoutes(Runtime* runtime) {
+bool ConfigureWintunAddress(Runtime* runtime) {
   const std::wstring adapter = kAdapterName;
   const std::wstring cpe = Utf8ToWide(runtime->cpe);
-  const std::wstring physical_if = std::to_wstring(runtime->physical.if_index);
-  const std::wstring wintun_if = std::to_wstring(runtime->wintun_if_index);
   bool ok = true;
   ok &= RunCommand(L"netsh interface ipv4 set address name=\"" + adapter +
                    L"\" static 10.255.0.2 255.255.255.252 >NUL");
@@ -1081,6 +1093,14 @@ bool ConfigureWintunAddressAndRoutes(Runtime* runtime) {
                    L"\" static " + cpe + L" primary >NUL");
   ok &= RunCommand(L"netsh interface ipv4 set subinterface \"" + adapter +
                    L"\" mtu=1400 store=active >NUL");
+  return ok;
+}
+
+bool ConfigureWintunRoutes(Runtime* runtime) {
+  const std::wstring cpe = Utf8ToWide(runtime->cpe);
+  const std::wstring physical_if = std::to_wstring(runtime->physical.if_index);
+  const std::wstring wintun_if = std::to_wstring(runtime->wintun_if_index);
+  bool ok = true;
   ok &= RunCommand(L"netsh interface ipv4 add route " + cpe + L"/32 \"" +
                    runtime->physical.name + L"\" 0.0.0.0 store=active >NUL");
   ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 " + cpe + L" metric " +
@@ -1167,6 +1187,13 @@ std::string StatusTextLocked(Runtime* runtime) {
   out += "rxBytes=" + std::to_string(runtime->rx_bytes) + "\n";
   out += "txRate=" + std::to_string(runtime->tx_rate) + "\n";
   out += "rxRate=" + std::to_string(runtime->rx_rate) + "\n";
+  out += "txPackets=" + std::to_string(runtime->tx_packets) + "\n";
+  out += "rxPackets=" + std::to_string(runtime->rx_packets) + "\n";
+  out += "txDropped=" + std::to_string(runtime->tx_dropped) + "\n";
+  out += "rxDropped=" + std::to_string(runtime->rx_dropped) + "\n";
+  out += "natMisses=" + std::to_string(runtime->nat_misses) + "\n";
+  out += "sendFailures=" + std::to_string(runtime->send_failures) + "\n";
+  out += "udp443Packets=" + std::to_string(runtime->udp443_packets) + "\n";
   out += "lastError=" + runtime->last_error + "\n";
   return out;
 }
@@ -1247,10 +1274,16 @@ void TunReadLoop(Runtime* runtime) {
       bool translated = false;
       {
         std::lock_guard<std::mutex> lock(runtime->mutex);
+        runtime->tx_packets++;
+        if (IsUdp443Packet(copy.data(), copy.size())) {
+          runtime->udp443_packets++;
+        }
         translated = NatTranslateOutgoing(&runtime->nat, copy.data(), copy.size(),
                                           runtime->physical.ip, runtime->cpe_ip);
         if (translated) {
           runtime->tx_bytes += copy.size();
+        } else {
+          runtime->tx_dropped++;
         }
       }
       if (translated) {
@@ -1260,9 +1293,17 @@ void TunReadLoop(Runtime* runtime) {
         addr.Network.SubIfIdx = runtime->physical.sub_if_index;
         runtime->windivert.calc_checksums(copy.data(), static_cast<UINT>(copy.size()), &addr, 0);
         UINT written = 0;
-        runtime->windivert.send(runtime->divert_return, copy.data(), static_cast<UINT>(copy.size()),
-                                &written, &addr);
+        if (!runtime->windivert.send(runtime->divert_return, copy.data(),
+                                     static_cast<UINT>(copy.size()), &written, &addr) ||
+            written != copy.size()) {
+          std::lock_guard<std::mutex> lock(runtime->mutex);
+          runtime->send_failures++;
+          runtime->tx_dropped++;
+        }
       }
+    } else {
+      std::lock_guard<std::mutex> lock(runtime->mutex);
+      runtime->tx_dropped++;
     }
     runtime->wintun.release_receive_packet(runtime->wintun_session, packet);
   }
@@ -1285,10 +1326,14 @@ void DivertReturnLoop(Runtime* runtime) {
     bool translated = false;
     {
       std::lock_guard<std::mutex> lock(runtime->mutex);
+      runtime->rx_packets++;
       translated =
           NatTranslateIncoming(&runtime->nat, copy.data(), copy.size(), runtime->physical.ip);
       if (translated) {
         runtime->rx_bytes += copy.size();
+      } else {
+        runtime->nat_misses++;
+        runtime->rx_dropped++;
       }
     }
     if (!translated) {
@@ -1297,6 +1342,8 @@ void DivertReturnLoop(Runtime* runtime) {
     BYTE* out = runtime->wintun.allocate_send_packet(runtime->wintun_session,
                                                      static_cast<DWORD>(copy.size()));
     if (out == nullptr) {
+      std::lock_guard<std::mutex> lock(runtime->mutex);
+      runtime->rx_dropped++;
       continue;
     }
     memcpy(out, copy.data(), copy.size());
@@ -1353,7 +1400,7 @@ bool StartAcceleration(const std::string& cpe) {
     LogEvent("Windows CPE changed, restarting acceleration");
     StopAcceleration("cpe changed", false);
   }
-  std::lock_guard<std::mutex> lock(g_runtime.mutex);
+  std::unique_lock<std::mutex> lock(g_runtime.mutex);
   if (g_runtime.running.load()) {
     return true;
   }
@@ -1363,6 +1410,13 @@ bool StartAcceleration(const std::string& cpe) {
   g_runtime.stop_requested = false;
   g_runtime.health_failures = 0;
   g_runtime.l3_failures = 0;
+  g_runtime.tx_packets = 0;
+  g_runtime.rx_packets = 0;
+  g_runtime.tx_dropped = 0;
+  g_runtime.rx_dropped = 0;
+  g_runtime.nat_misses = 0;
+  g_runtime.send_failures = 0;
+  g_runtime.udp443_packets = 0;
   memset(&g_runtime.nat, 0, sizeof(g_runtime.nat));
   if (!ParseIpv4(g_runtime.cpe.c_str(), &g_runtime.cpe_ip)) {
     g_runtime.state = "failed";
@@ -1418,13 +1472,12 @@ bool StartAcceleration(const std::string& cpe) {
     return false;
   }
   CleanupRoutes(&g_runtime);
-  if (!ConfigureWintunAddressAndRoutes(&g_runtime)) {
+  if (!ConfigureWintunAddress(&g_runtime)) {
     CleanupRoutes(&g_runtime);
     g_runtime.state = "failed";
-    g_runtime.last_error = "failed to configure Wintun routes";
+    g_runtime.last_error = "failed to configure Wintun address";
     return false;
   }
-  LogEvent("Windows route layer ready: Wintun capture with CPE physical egress");
   g_runtime.divert_return =
       g_runtime.windivert.open(filter.c_str(), WINDIVERT_LAYER_NETWORK, -500, 0);
   if (g_runtime.divert_return == INVALID_HANDLE_VALUE) {
@@ -1444,11 +1497,26 @@ bool StartAcceleration(const std::string& cpe) {
     g_runtime.last_error = "failed to start Wintun session";
     return false;
   }
-  g_runtime.running = true;
-  g_runtime.state = "running";
-  LogEvent("Windows TUN acceleration started");
   g_runtime.tun_thread = std::thread(TunReadLoop, &g_runtime);
   g_runtime.divert_thread = std::thread(DivertReturnLoop, &g_runtime);
+  lock.unlock();
+  if (!ConfigureWintunRoutes(&g_runtime)) {
+    StopAcceleration("failed to configure Wintun routes", false);
+    std::lock_guard<std::mutex> failed_lock(g_runtime.mutex);
+    g_runtime.state = "failed";
+    g_runtime.last_error = "failed to configure Wintun routes";
+    return false;
+  }
+  lock.lock();
+  if (g_runtime.stop_requested.load()) {
+    lock.unlock();
+    StopAcceleration("start cancelled", false);
+    return false;
+  }
+  g_runtime.running = true;
+  g_runtime.state = "running";
+  LogEvent("Windows route layer ready: Wintun capture with CPE physical egress");
+  LogEvent("Windows TUN acceleration started");
   g_runtime.health_thread = std::thread(HealthLoop, &g_runtime);
   return true;
 }

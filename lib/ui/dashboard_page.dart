@@ -117,6 +117,10 @@ class DashboardPage extends StatelessWidget {
                       width: c.maxWidth,
                       child: _TrafficCard(stats: status.traffic),
                     ),
+                    SizedBox(
+                      width: c.maxWidth,
+                      child: _DiagnosticsCard(diagnostics: status.diagnostics),
+                    ),
                   ],
                 );
               },
@@ -386,6 +390,98 @@ class _TrafficMetric extends StatelessWidget {
               fontWeight: FontWeight.w700,
               color: AppColors.textPrimary,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiagnosticsCard extends StatelessWidget {
+  const _DiagnosticsCard({required this.diagnostics});
+
+  final TunDiagnostics diagnostics;
+
+  @override
+  Widget build(BuildContext context) {
+    final warningColor = diagnostics.hasWarnings
+        ? AppColors.warning
+        : AppColors.success;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: panelDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: AppColors.primarySoft,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  diagnostics.hasWarnings
+                      ? Icons.warning_amber_rounded
+                      : Icons.health_and_safety_rounded,
+                  size: 18,
+                  color: warningColor,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                '链路诊断',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _TrafficMetric(
+                label: '出站包',
+                value: diagnostics.txPackets.toString(),
+                icon: Icons.call_made_rounded,
+              ),
+              _TrafficMetric(
+                label: '回程包',
+                value: diagnostics.rxPackets.toString(),
+                icon: Icons.call_received_rounded,
+              ),
+              _TrafficMetric(
+                label: '出站丢弃',
+                value: diagnostics.txDropped.toString(),
+                icon: Icons.upload_file_rounded,
+              ),
+              _TrafficMetric(
+                label: '回程丢弃',
+                value: diagnostics.rxDropped.toString(),
+                icon: Icons.download_for_offline_rounded,
+              ),
+              _TrafficMetric(
+                label: 'NAT Miss',
+                value: diagnostics.natMisses.toString(),
+                icon: Icons.link_off_rounded,
+              ),
+              _TrafficMetric(
+                label: '发送失败',
+                value: diagnostics.sendFailures.toString(),
+                icon: Icons.error_outline_rounded,
+              ),
+              _TrafficMetric(
+                label: 'UDP 443',
+                value: diagnostics.udp443Packets.toString(),
+                icon: Icons.bolt_rounded,
+              ),
+            ],
           ),
         ],
       ),

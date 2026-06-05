@@ -41,6 +41,30 @@ void main() {
     expect(updated.traffic.rxRate, 78);
   });
 
+  test('copyWith preserves data plane diagnostics unless replaced', () {
+    final status = TunStatus.defaults().copyWith(
+      diagnostics: const TunDiagnostics(
+        txPackets: 10,
+        rxPackets: 8,
+        txDropped: 2,
+        rxDropped: 3,
+        natMisses: 4,
+        sendFailures: 5,
+        udp443Packets: 6,
+      ),
+    );
+
+    final updated = status.copyWith(state: TunState.running);
+
+    expect(updated.diagnostics.txPackets, 10);
+    expect(updated.diagnostics.rxPackets, 8);
+    expect(updated.diagnostics.txDropped, 2);
+    expect(updated.diagnostics.rxDropped, 3);
+    expect(updated.diagnostics.natMisses, 4);
+    expect(updated.diagnostics.sendFailures, 5);
+    expect(updated.diagnostics.udp443Packets, 6);
+  });
+
   test('copyWith can override adapter label', () {
     final status = TunStatus.defaults();
 

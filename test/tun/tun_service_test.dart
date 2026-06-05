@@ -27,6 +27,13 @@ void main() {
             'rxBytes': 2048,
             'txRate': 128,
             'rxRate': 256,
+            'txPackets': 10,
+            'rxPackets': 8,
+            'txDropped': 2,
+            'rxDropped': 3,
+            'natMisses': 4,
+            'sendFailures': 5,
+            'udp443Packets': 6,
             'cpe': {
               'host': '192.168.1.140',
               'reachable': true,
@@ -48,6 +55,13 @@ void main() {
     expect(status.traffic.rxBytes, 2048);
     expect(status.traffic.txRate, 128);
     expect(status.traffic.rxRate, 256);
+    expect(status.diagnostics.txPackets, 10);
+    expect(status.diagnostics.rxPackets, 8);
+    expect(status.diagnostics.txDropped, 2);
+    expect(status.diagnostics.rxDropped, 3);
+    expect(status.diagnostics.natMisses, 4);
+    expect(status.diagnostics.sendFailures, 5);
+    expect(status.diagnostics.udp443Packets, 6);
   });
 
   test('sends updated CPE host with native calls', () async {

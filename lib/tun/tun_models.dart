@@ -39,6 +39,57 @@ class TrafficStats {
   int get hashCode => Object.hash(txBytes, rxBytes, txRate, rxRate);
 }
 
+class TunDiagnostics {
+  const TunDiagnostics({
+    this.txPackets = 0,
+    this.rxPackets = 0,
+    this.txDropped = 0,
+    this.rxDropped = 0,
+    this.natMisses = 0,
+    this.sendFailures = 0,
+    this.udp443Packets = 0,
+  });
+
+  final int txPackets;
+  final int rxPackets;
+  final int txDropped;
+  final int rxDropped;
+  final int natMisses;
+  final int sendFailures;
+  final int udp443Packets;
+
+  bool get hasWarnings =>
+      txDropped > 0 ||
+      rxDropped > 0 ||
+      natMisses > 0 ||
+      sendFailures > 0 ||
+      udp443Packets > 0;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is TunDiagnostics &&
+            other.txPackets == txPackets &&
+            other.rxPackets == rxPackets &&
+            other.txDropped == txDropped &&
+            other.rxDropped == rxDropped &&
+            other.natMisses == natMisses &&
+            other.sendFailures == sendFailures &&
+            other.udp443Packets == udp443Packets;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    txPackets,
+    rxPackets,
+    txDropped,
+    rxDropped,
+    natMisses,
+    sendFailures,
+    udp443Packets,
+  );
+}
+
 class TunConnection {
   const TunConnection({
     required this.lastSeen,
@@ -372,6 +423,7 @@ class TunStatus {
     required this.cpe,
     this.helperInstalled = false,
     this.traffic = const TrafficStats(),
+    this.diagnostics = const TunDiagnostics(),
     this.lastError,
   });
 
@@ -392,6 +444,7 @@ class TunStatus {
   final CpeHealth cpe;
   final bool helperInstalled;
   final TrafficStats traffic;
+  final TunDiagnostics diagnostics;
   final String? lastError;
 
   TunStatus copyWith({
@@ -402,6 +455,7 @@ class TunStatus {
     CpeHealth? cpe,
     bool? helperInstalled,
     TrafficStats? traffic,
+    TunDiagnostics? diagnostics,
     Object? lastError = _unset,
   }) {
     return TunStatus(
@@ -412,6 +466,7 @@ class TunStatus {
       cpe: cpe ?? this.cpe,
       helperInstalled: helperInstalled ?? this.helperInstalled,
       traffic: traffic ?? this.traffic,
+      diagnostics: diagnostics ?? this.diagnostics,
       lastError: lastError == _unset ? this.lastError : lastError as String?,
     );
   }
@@ -427,6 +482,7 @@ class TunStatus {
             other.cpe == cpe &&
             other.helperInstalled == helperInstalled &&
             other.traffic == traffic &&
+            other.diagnostics == diagnostics &&
             other.lastError == lastError;
   }
 
@@ -439,6 +495,7 @@ class TunStatus {
     cpe,
     helperInstalled,
     traffic,
+    diagnostics,
     lastError,
   );
 }
