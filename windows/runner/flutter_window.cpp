@@ -430,6 +430,16 @@ void ToggleAccelerationFromTray() {
     RunHelper(HelperArgs(L"start", g_last_cpe_host));
   }
 }
+
+bool g_stop_before_exit_called = false;
+
+void StopAccelerationBeforeExit() {
+  if (g_stop_before_exit_called) {
+    return;
+  }
+  g_stop_before_exit_called = true;
+  RunHelper(HelperArgs(L"stop", g_last_cpe_host));
+}
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -457,7 +467,8 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), kTunChannelName,
           &flutter::StandardMethodCodec::GetInstance());
-  SetTrayAccelerationHandlers(IsAccelerationRunning, ToggleAccelerationFromTray);
+  SetTrayAccelerationHandlers(IsAccelerationRunning, ToggleAccelerationFromTray,
+                              StopAccelerationBeforeExit);
   tun_channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const std::string& method = call.method_name();
     const std::string host = CpeHostFromArgs(call.arguments());
@@ -526,6 +537,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  StopAccelerationBeforeExit();
   tun_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;

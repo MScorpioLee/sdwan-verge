@@ -226,6 +226,17 @@ Win32Window::MessageHandler(HWND hwnd,
         HideToTray();
         return 0;
       }
+      RunExitHandler();
+      break;
+
+    case WM_QUERYENDSESSION:
+      RunExitHandler();
+      return TRUE;
+
+    case WM_ENDSESSION:
+      if (wparam) {
+        RunExitHandler();
+      }
       break;
 
     case kTrayCallbackMessage:
@@ -353,9 +364,11 @@ void Win32Window::SetMinimizeToTrayOnClose(bool minimize_to_tray_on_close) {
 
 void Win32Window::SetTrayAccelerationHandlers(
     std::function<bool()> status_provider,
-    std::function<void()> toggle_handler) {
+    std::function<void()> toggle_handler,
+    std::function<void()> exit_handler) {
   tray_status_provider_ = std::move(status_provider);
   tray_toggle_handler_ = std::move(toggle_handler);
+  tray_exit_handler_ = std::move(exit_handler);
   RefreshTrayIcon();
 }
 
@@ -445,8 +458,19 @@ void Win32Window::ShowTrayMenu() {
 
 void Win32Window::ExitFromTray() {
   quit_requested_ = true;
+  RunExitHandler();
   RemoveTrayIcon();
   Destroy();
+}
+
+void Win32Window::RunExitHandler() {
+  if (exit_handler_called_) {
+    return;
+  }
+  exit_handler_called_ = true;
+  if (tray_exit_handler_) {
+    tray_exit_handler_();
+  }
 }
 
 bool Win32Window::IsTrayAccelerationRunning() const {

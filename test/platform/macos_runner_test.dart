@@ -22,4 +22,15 @@ void main() {
     expect(appDelegate, contains('bolt.circle.fill'));
     expect(appDelegate, contains('bolt.circle'));
   });
+
+  test('macOS stops acceleration before quitting the app', () {
+    final appDelegate = read('macos/Runner/AppDelegate.swift');
+
+    expect(appDelegate, contains('applicationShouldTerminate'));
+    expect(appDelegate, contains('stopAccelerationBeforeExit'));
+    expect(appDelegate, contains('runInstalledHelper'));
+    expect(appDelegate, contains('stopHelper(statusMenuArguments())'));
+    expect(appDelegate, contains('stopAccelerationBeforeExit()'));
+    expect(appDelegate, contains('NSApp.terminate(nil)'));
+  });
 }

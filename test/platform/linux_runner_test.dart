@@ -38,4 +38,12 @@ void main() {
     expect(runner, contains('Linux IPv4 TUN backend is not wired yet'));
     expect(runner, contains('IPv4 TUN 虚拟网卡'));
   });
+
+  test('Linux runner has a shutdown hook to stop acceleration before exit', () {
+    final runner = read('linux/runner/my_application.cc');
+
+    expect(runner, contains('stop_acceleration_before_exit'));
+    expect(runner, contains('my_application_shutdown'));
+    expect(runner, contains('tray_quit_cb'));
+  });
 }

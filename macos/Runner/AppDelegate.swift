@@ -12,6 +12,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   private var statusItem: NSStatusItem?
   private var statusToggleItem: NSMenuItem?
   private var lastCpeHost = "192.168.1.140"
+  private var didStopAccelerationBeforeExit = false
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
@@ -40,6 +41,11 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     return false
+  }
+
+  override func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    stopAccelerationBeforeExit()
+    return .terminateNow
   }
 
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -144,7 +150,20 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   @objc private func quitFromStatusMenu(_ sender: Any?) {
+    stopAccelerationBeforeExit()
     NSApp.terminate(nil)
+  }
+
+  private func stopAccelerationBeforeExit() {
+    guard !didStopAccelerationBeforeExit else {
+      return
+    }
+    didStopAccelerationBeforeExit = true
+    guard installedHelperAvailable() || isAccelerationRunning(arguments: statusMenuArguments()) else {
+      return
+    }
+    _ = stopHelper(statusMenuArguments())
+    updateStatusItemAppearance()
   }
 
   @objc private func toggleAccelerationFromStatusMenu(_ sender: Any?) {
@@ -306,7 +325,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       )
     }
     let stopArgs = helperArguments(["stop"], from: arguments)
-    let run = installedHelperAvailable() ? runHelper(stopArgs) : runHelperPrivileged(stopArgs)
+    let run = installedHelperAvailable() ? runInstalledHelper(stopArgs) : runHelperPrivileged(stopArgs)
     if run.exitCode != 0 {
       return statusFromPairs(
         ["state": "failed", "lastError": run.output],
@@ -482,7 +501,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   private func uninstallHelper(_ arguments: Any?) -> [String: Any] {
     let run: (exitCode: Int32, output: String)
     if installedHelperAvailable() {
-      run = runHelper(helperArguments(["uninstall"], from: arguments))
+      run = runInstalledHelper(helperArguments(["uninstall"], from: arguments))
     } else {
       run = runHelperPrivileged(
         helperArguments(["uninstall"], from: arguments),
@@ -647,6 +666,20 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     guard let helper = helperPath() else {
       return (127, "macOS helper 未安装")
     }
+    return runHelper(at: helper, arguments: arguments)
+  }
+
+  private func runInstalledHelper(_ arguments: [String]) -> (exitCode: Int32, output: String) {
+    guard installedHelperAvailable() else {
+      return (127, "macOS helper 未安装")
+    }
+    return runHelper(at: installedHelperPath, arguments: arguments)
+  }
+
+  private func runHelper(
+    at helper: String,
+    arguments: [String]
+  ) -> (exitCode: Int32, output: String) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: helper)
     process.arguments = arguments

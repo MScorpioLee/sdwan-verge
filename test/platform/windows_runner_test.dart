@@ -49,4 +49,14 @@ void main() {
 
     expect(cmake, contains('/utf-8'));
   });
+
+  test('Windows runner stops acceleration before tray exit and destroy fallback', () {
+    final win32Window = read('windows/runner/win32_window.cpp');
+    final flutterWindow = read('windows/runner/flutter_window.cpp');
+
+    expect(win32Window, contains('RunExitHandler'));
+    expect(win32Window, contains('tray_exit_handler_'));
+    expect(flutterWindow, contains('StopAccelerationBeforeExit'));
+    expect(flutterWindow, contains('RunHelper(HelperArgs(L"stop", g_last_cpe_host))'));
+  });
 }

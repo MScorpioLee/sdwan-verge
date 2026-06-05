@@ -56,7 +56,8 @@ class Win32Window {
   void SetMinimizeToTrayOnClose(bool minimize_to_tray_on_close);
 
   void SetTrayAccelerationHandlers(std::function<bool()> status_provider,
-                                   std::function<void()> toggle_handler);
+                                   std::function<void()> toggle_handler,
+                                   std::function<void()> exit_handler);
   void RefreshTrayIcon();
 
   // Return a RECT representing the bounds of the current client area.
@@ -106,6 +107,7 @@ class Win32Window {
   void RestoreFromTray();
   void ShowTrayMenu();
   void ExitFromTray();
+  void RunExitHandler();
   bool IsTrayAccelerationRunning() const;
   const wchar_t* TrayToggleLabel() const;
   int TrayIconResource() const;
@@ -114,8 +116,10 @@ class Win32Window {
   bool minimize_to_tray_on_close_ = false;
   bool tray_icon_visible_ = false;
   bool quit_requested_ = false;
+  bool exit_handler_called_ = false;
   std::function<bool()> tray_status_provider_;
   std::function<void()> tray_toggle_handler_;
+  std::function<void()> tray_exit_handler_;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

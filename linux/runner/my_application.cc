@@ -153,8 +153,17 @@ static void tray_toggle_cb(GtkMenuItem* item, gpointer user_data) {
   update_tray_icon(self);
 }
 
+static void stop_acceleration_before_exit(MyApplication* self) {
+  if (self == nullptr || !self->tun_running) {
+    return;
+  }
+  self->tun_running = FALSE;
+  update_tray_icon(self);
+}
+
 static void tray_quit_cb(GtkMenuItem* item, gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
+  stop_acceleration_before_exit(self);
   self->quit_requested = TRUE;
   g_application_quit(G_APPLICATION(self));
 }
@@ -381,9 +390,8 @@ static void my_application_startup(GApplication* application) {
 
 // Implements GApplication::shutdown.
 static void my_application_shutdown(GApplication* application) {
-  // MyApplication* self = MY_APPLICATION(object);
-
-  // Perform any actions required at application shutdown.
+  MyApplication* self = MY_APPLICATION(application);
+  stop_acceleration_before_exit(self);
 
   G_APPLICATION_CLASS(my_application_parent_class)->shutdown(application);
 }
