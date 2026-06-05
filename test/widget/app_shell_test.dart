@@ -243,7 +243,7 @@ void main() {
 
     await tester.tap(find.text('帮助'));
     await tester.pumpAndSettle();
-    expect(find.text('TUN 模式'), findsOneWidget);
+    expect(find.text('IPv4 TUN 模式'), findsOneWidget);
     expect(find.text('桌面端'), findsNothing);
     expect(find.text('手机端'), findsNothing);
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);

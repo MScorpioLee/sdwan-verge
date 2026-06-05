@@ -31,4 +31,11 @@ void main() {
     expect(File('linux/runner/resources/tray-active.png').existsSync(), isTrue);
     expect(File('linux/runner/resources/tray-idle.png').existsSync(), isTrue);
   });
+
+  test('Linux runner reports IPv4 TUN backend boundary explicitly', () {
+    final runner = read('linux/runner/my_application.cc');
+
+    expect(runner, contains('Linux IPv4 TUN backend is not wired yet'));
+    expect(runner, contains('IPv4 TUN 虚拟网卡'));
+  });
 }

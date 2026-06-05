@@ -57,6 +57,10 @@
 #define MAX_NAT 4096
 #define MAX_DNS_CACHE 2048
 #define HEARTBEAT_TIMEOUT_SEC 30
+#define HEALTH_INTERVAL_SEC 2
+#define DNS_PROBE_TIMEOUT_SEC 1
+#define TUN_MTU 1400
+#define TCP_MSS_CLAMP 1360
 #define NAT_PORT_START 42000
 #define NAT_PORT_END 42999
 
@@ -425,6 +429,55 @@ static void fix_transport_checksum(uint8_t *packet, size_t len) {
   }
 }
 
+static bool clamp_tcp_mss(uint8_t *packet, size_t len, uint16_t max_mss) {
+  if (len < 40 || (packet[0] >> 4) != 4 || packet[9] != IPPROTO_TCP) {
+    return false;
+  }
+  size_t ihl = (packet[0] & 0x0f) * 4;
+  if (ihl < 20 || len < ihl + 20) {
+    return false;
+  }
+  uint8_t *tcp = packet + ihl;
+  uint8_t flags = tcp[13];
+  if ((flags & 0x02) == 0) {
+    return false;
+  }
+  size_t tcp_header_len = ((tcp[12] >> 4) & 0x0f) * 4;
+  if (tcp_header_len < 20 || len < ihl + tcp_header_len) {
+    return false;
+  }
+  size_t option = ihl + 20;
+  size_t option_end = ihl + tcp_header_len;
+  while (option < option_end) {
+    uint8_t kind = packet[option];
+    if (kind == 0) {
+      break;
+    }
+    if (kind == 1) {
+      option++;
+      continue;
+    }
+    if (option + 1 >= option_end) {
+      break;
+    }
+    uint8_t option_len = packet[option + 1];
+    if (option_len < 2 || option + option_len > option_end) {
+      break;
+    }
+    if (kind == 2 && option_len == 4) {
+      uint16_t current = read_u16(packet + option + 2);
+      if (current > max_mss) {
+        write_u16(packet + option + 2, max_mss);
+        fix_transport_checksum(packet, len);
+        return true;
+      }
+      return false;
+    }
+    option += option_len;
+  }
+  return false;
+}
+
 static bool parse_ipv4_ports(const uint8_t *packet, size_t len, uint16_t *src_port, uint16_t *dst_port) {
   if (len < 20) {
     return false;
@@ -741,6 +794,7 @@ static bool nat_translate_outgoing(NatTable *table, uint8_t *packet, size_t len,
   }
   entry->tx_bytes += len;
   entry->last_seen = time(NULL);
+  (void)clamp_tcp_mss(packet, len, TCP_MSS_CLAMP);
   write_u32(packet + 12, physical_ip);
   write_u32(packet + 16, remote_ip);
   if (!write_ipv4_src_port(packet, len, entry->translated_port)) {
@@ -800,7 +854,7 @@ static size_t build_ethernet_frame(uint8_t *frame, size_t frame_size,
 static void print_plan(const HelperConfig *config) {
   const char *ifname = config->ifname[0] == '\0' ? "en0" : config->ifname;
   const char *utun = config->utun[0] == '\0' ? "utun9" : config->utun;
-  printf("/sbin/ifconfig %s inet %s %s mtu 1500 up\n", utun, config->tun_local, config->tun_peer);
+  printf("/sbin/ifconfig %s inet %s %s mtu %d up\n", utun, config->tun_local, config->tun_peer, TUN_MTU);
   printf("/sbin/route -n add -host %s -interface %s\n", config->cpe, ifname);
   printf("/sbin/route -n add 0.0.0.0/1 -interface %s\n", utun);
   printf("/sbin/route -n add 128.0.0.0/1 -interface %s\n", utun);
@@ -1058,7 +1112,7 @@ static void cleanup_pf(Runtime *runtime) {
 static void write_state(Runtime *runtime, const char *state, const char *message) {
   char content[2048];
   snprintf(content, sizeof(content),
-           "pid=%d\nstate=%s\npermission=ready\ncpe=%s\nifname=%s\nutun=%s\n"
+           "pid=%d\nstate=%s\nadapterName=IPv4 TUN 虚拟网卡\npermission=ready\ncpe=%s\nifname=%s\nutun=%s\n"
            "message=%s\ntx_bytes=%llu\nrx_bytes=%llu\ntx_rate=%llu\nrx_rate=%llu\n",
            getpid(), state, runtime->config.cpe, runtime->physical_ifname,
            runtime->utun_ifname, message == NULL ? "" : message,
@@ -1226,7 +1280,7 @@ static bool dns_probe_cpe(const char *cpe) {
     return false;
   }
   struct timeval timeout;
-  timeout.tv_sec = 2;
+  timeout.tv_sec = DNS_PROBE_TIMEOUT_SEC;
   timeout.tv_usec = 0;
   (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
@@ -1258,8 +1312,8 @@ static int update_health_failures(int current_failures, bool l1_ok, bool l3_ok) 
 
 static bool configure_routes(Runtime *runtime) {
   char command[512];
-  snprintf(command, sizeof(command), "/sbin/ifconfig %s inet %s %s mtu 1500 up",
-           runtime->utun_ifname, runtime->config.tun_local, runtime->config.tun_peer);
+  snprintf(command, sizeof(command), "/sbin/ifconfig %s inet %s %s mtu %d up",
+           runtime->utun_ifname, runtime->config.tun_local, runtime->config.tun_peer, TUN_MTU);
   if (run_command(command) != 0) {
     return false;
   }
@@ -1294,9 +1348,15 @@ static void process_utun_packet(Runtime *runtime, const uint8_t *buffer, size_t 
   if (len <= 4 || len - 4 > MAX_PACKET) {
     return;
   }
+  if (read_u32(buffer) != AF_INET) {
+    return;
+  }
   uint8_t packet[MAX_PACKET];
   memcpy(packet, buffer + 4, len - 4);
   size_t packet_len = len - 4;
+  if ((packet[0] >> 4) != 4) {
+    return;
+  }
   if (!nat_translate_outgoing(&runtime->nat, packet, packet_len,
                               runtime->physical_ip, runtime->cpe_ip)) {
     return;
@@ -1352,6 +1412,7 @@ static int data_loop(Runtime *runtime) {
     return 1;
   }
   int health_failures = 0;
+  int l3_failures = 0;
   time_t last_health = 0;
   while (!g_stop_requested) {
     fd_set readfds;
@@ -1382,14 +1443,20 @@ static int data_loop(Runtime *runtime) {
     update_rates(runtime, now);
     write_state(runtime, "running", "running");
     write_connections_snapshot(runtime);
-    if (now - last_health >= 5) {
+    if (now - last_health >= HEALTH_INTERVAL_SEC) {
       bool l1_ok = ping_cpe(runtime->config.cpe);
       bool l3_ok = l1_ok && dns_probe_cpe(runtime->config.cpe);
-      health_failures = update_health_failures(health_failures, l1_ok, l3_ok);
-      if (!l1_ok || !l3_ok) {
+      health_failures = l1_ok ? 0 : update_health_failures(health_failures, l1_ok, l3_ok);
+      if (l1_ok && !l3_ok) {
+        l3_failures++;
+      } else if (l3_ok) {
+        l3_failures = 0;
+      }
+      if (!l1_ok || (l1_ok && !l3_ok && (l3_failures == 1 || l3_failures % 15 == 0))) {
         char health_event[256];
         snprintf(health_event, sizeof(health_event),
-                 "健康检测失败 l1=%s l3=%s failures=%d",
+                 "健康检测%s l1=%s l3=%s failures=%d",
+                 l1_ok ? "降级" : "失败",
                  l1_ok ? "true" : "false", l3_ok ? "true" : "false", health_failures);
         log_event(&runtime->config, health_event);
       }
@@ -1657,6 +1724,7 @@ static void print_status(HelperConfig *config) {
   }
   touch_file(heartbeat_file);
   printf("state=%s\n", state);
+  printf("adapterName=IPv4 TUN 虚拟网卡\n");
   printf("permission=%s\n", permission);
   printf("host=%s\n", config->cpe);
   printf("reachable=%s\n", reachable ? "true" : "false");
@@ -1787,6 +1855,13 @@ static int command_self_test(void) {
   uint32_t physical_ip = 0xc0a80158; // 192.168.1.88
   uint32_t cpe_ip = 0xc0a8018c;      // 192.168.1.140
   uint32_t remote_ip = 0x08080808;   // 8.8.8.8
+  uint8_t ipv6_packet[40];
+  memset(ipv6_packet, 0, sizeof(ipv6_packet));
+  ipv6_packet[0] = 0x60;
+  if (nat_translate_outgoing(&table, ipv6_packet, sizeof(ipv6_packet), physical_ip, cpe_ip)) {
+    fprintf(stderr, "ipv6 packet should not enter ipv4 tun nat\n");
+    return 1;
+  }
   make_udp_packet(packet, &len, tun_ip, remote_ip, 12345, 53);
   if (!nat_translate_outgoing(&table, packet, len, physical_ip, cpe_ip)) {
     fprintf(stderr, "nat outgoing failed\n");
@@ -1821,6 +1896,28 @@ static int command_self_test(void) {
   }
   if (read_u16(reply + 22) != 12345) {
     fprintf(stderr, "destination port restore failed\n");
+    return 1;
+  }
+  uint8_t tcp_syn[64];
+  memset(tcp_syn, 0, sizeof(tcp_syn));
+  tcp_syn[0] = 0x45;
+  tcp_syn[8] = 64;
+  tcp_syn[9] = IPPROTO_TCP;
+  write_u16(tcp_syn + 2, 44);
+  write_u32(tcp_syn + 12, tun_ip);
+  write_u32(tcp_syn + 16, remote_ip);
+  write_u16(tcp_syn + 20, 44321);
+  write_u16(tcp_syn + 22, 443);
+  tcp_syn[32] = 0x60;
+  tcp_syn[33] = 0x02;
+  write_u16(tcp_syn + 34, 65535);
+  tcp_syn[40] = 2;
+  tcp_syn[41] = 4;
+  write_u16(tcp_syn + 42, 1460);
+  fix_ipv4_checksum(tcp_syn, 44);
+  fix_transport_checksum(tcp_syn, 44);
+  if (!clamp_tcp_mss(tcp_syn, 44, 1360) || read_u16(tcp_syn + 42) != 1360) {
+    fprintf(stderr, "tcp mss clamp failed\n");
     return 1;
   }
   NatTable dns_table;

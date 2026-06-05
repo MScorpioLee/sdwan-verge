@@ -323,6 +323,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     let state = pairs["state"] ?? fallbackState
     var status: [String: Any] = [
       "state": state,
+      "adapterName": pairs["adapterName"] ?? "IPv4 TUN 虚拟网卡",
       "permission": pairs["permission"] ?? "needsHelperInstall",
       "helperInstalled": installedHelperReady(),
       "cpe": healthFromPairs(pairs),

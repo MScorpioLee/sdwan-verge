@@ -35,6 +35,8 @@ constexpr char kTunLocal[] = "10.255.0.2";
 constexpr char kTunPeer[] = "10.255.0.1";
 constexpr int kTunRouteMetric = 5;
 constexpr int kPhysicalEgressRouteMetric = 50;
+constexpr int kTunMtu = 1400;
+constexpr uint16_t kTcpMssClamp = 1360;
 constexpr uint16_t kNatPortStart = 42000;
 constexpr uint16_t kNatPortEnd = 42999;
 constexpr size_t kMaxNat = 4096;
@@ -156,6 +158,7 @@ struct Runtime {
   uint64_t rx_rate = 0;
   time_t last_rate_at = 0;
   int health_failures = 0;
+  int l3_failures = 0;
   WintunApi wintun;
   WinDivertApi windivert;
   WINTUN_ADAPTER_HANDLE wintun_adapter = nullptr;
@@ -199,6 +202,10 @@ bool ParseIpv4(const char* text, uint32_t* out) {
   }
   *out = ntohl(addr.s_addr);
   return true;
+}
+
+bool IsIpv4Packet(const uint8_t* packet, size_t len) {
+  return len >= 20 && (packet[0] >> 4) == 4;
 }
 
 std::string Ipv4ToString(uint32_t ip) {
@@ -374,6 +381,54 @@ void FixTransportChecksum(uint8_t* packet, size_t len) {
     WriteU16(packet + ihl + 2, 0);
     WriteU16(packet + ihl + 2, Checksum16(packet + ihl, len - ihl));
   }
+}
+
+bool ClampTcpMss(uint8_t* packet, size_t len, uint16_t max_mss) {
+  if (!IsIpv4Packet(packet, len) || len < 40 || packet[9] != IPPROTO_TCP) {
+    return false;
+  }
+  const size_t ihl = (packet[0] & 0x0f) * 4;
+  if (ihl < 20 || len < ihl + 20) {
+    return false;
+  }
+  uint8_t* tcp = packet + ihl;
+  if ((tcp[13] & 0x02) == 0) {
+    return false;
+  }
+  const size_t tcp_header_len = ((tcp[12] >> 4) & 0x0f) * 4;
+  if (tcp_header_len < 20 || len < ihl + tcp_header_len) {
+    return false;
+  }
+  size_t option = ihl + 20;
+  const size_t option_end = ihl + tcp_header_len;
+  while (option < option_end) {
+    const uint8_t kind = packet[option];
+    if (kind == 0) {
+      break;
+    }
+    if (kind == 1) {
+      ++option;
+      continue;
+    }
+    if (option + 1 >= option_end) {
+      break;
+    }
+    const uint8_t option_len = packet[option + 1];
+    if (option_len < 2 || option + option_len > option_end) {
+      break;
+    }
+    if (kind == 2 && option_len == 4) {
+      const uint16_t current = ReadU16(packet + option + 2);
+      if (current > max_mss) {
+        WriteU16(packet + option + 2, max_mss);
+        FixTransportChecksum(packet, len);
+        return true;
+      }
+      return false;
+    }
+    option += option_len;
+  }
+  return false;
 }
 
 bool ParseIpv4Ports(const uint8_t* packet, size_t len, uint16_t* src_port, uint16_t* dst_port) {
@@ -649,7 +704,7 @@ bool ShouldRedirectDns(uint8_t proto, uint16_t dst_port) {
 
 bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
                           uint32_t physical_ip, uint32_t cpe_ip) {
-  if (len < 20 || (packet[0] >> 4) != 4) {
+  if (!IsIpv4Packet(packet, len)) {
     return false;
   }
   const uint8_t proto = packet[9];
@@ -687,6 +742,7 @@ bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
   }
   entry->tx_bytes += len;
   entry->last_seen = time(nullptr);
+  ClampTcpMss(packet, len, kTcpMssClamp);
   WriteU32(packet + 12, physical_ip);
   WriteU32(packet + 16, remote_ip);
   if (!WriteIpv4SrcPort(packet, len, entry->translated_port)) {
@@ -698,7 +754,7 @@ bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
 }
 
 bool NatTranslateIncoming(NatTable* table, uint8_t* packet, size_t len, uint32_t physical_ip) {
-  if (len < 20 || (packet[0] >> 4) != 4 || ReadU32(packet + 16) != physical_ip) {
+  if (!IsIpv4Packet(packet, len) || ReadU32(packet + 16) != physical_ip) {
     return false;
   }
   const uint8_t proto = packet[9];
@@ -1002,6 +1058,8 @@ bool ConfigureWintunAddressAndRoutes(Runtime* runtime) {
                    L"\" static 10.255.0.2 255.255.255.252 >NUL");
   ok &= RunCommand(L"netsh interface ipv4 set dnsservers name=\"" + adapter +
                    L"\" static " + cpe + L" primary >NUL");
+  ok &= RunCommand(L"netsh interface ipv4 set subinterface \"" + adapter +
+                   L"\" mtu=1400 store=active >NUL");
   ok &= RunCommand(L"netsh interface ipv4 add route " + cpe + L"/32 \"" +
                    runtime->physical.name + L"\" 0.0.0.0 store=active >NUL");
   ok &= RunCommand(L"route add 0.0.0.0 mask 128.0.0.0 " + cpe + L" metric " +
@@ -1163,7 +1221,7 @@ void TunReadLoop(Runtime* runtime) {
       WaitForSingleObject(event, 200);
       continue;
     }
-    if (packet_size >= 20 && packet_size <= 0xffff) {
+    if (packet_size >= 20 && packet_size <= 0xffff && IsIpv4Packet(packet, packet_size)) {
       std::vector<uint8_t> copy(packet, packet + packet_size);
       bool translated = false;
       {
@@ -1241,13 +1299,22 @@ void HealthLoop(Runtime* runtime) {
     }
     const bool l1 = PingCpe(cpe);
     const bool l3 = runtime->running ? L3Probe(physical_if_index) : l1;
-    if (l1 && l3) {
-      runtime->health_failures = 0;
-    } else {
+    if (!l1) {
       runtime->health_failures++;
+      runtime->l3_failures = 0;
       if (runtime->health_failures >= 3) {
         StopAcceleration("CPE health failed, auto rollback completed", true);
         return;
+      }
+    } else {
+      runtime->health_failures = 0;
+      if (!l3) {
+        runtime->l3_failures++;
+        if (runtime->l3_failures == 1 || runtime->l3_failures % 15 == 0) {
+          LogEvent("CPE reachable but L3 probe failed; keeping TUN running");
+        }
+      } else {
+        runtime->l3_failures = 0;
       }
     }
   }
@@ -1274,6 +1341,7 @@ bool StartAcceleration(const std::string& cpe) {
   g_runtime.state = "starting";
   g_runtime.stop_requested = false;
   g_runtime.health_failures = 0;
+  g_runtime.l3_failures = 0;
   memset(&g_runtime.nat, 0, sizeof(g_runtime.nat));
   if (!ParseIpv4(g_runtime.cpe.c_str(), &g_runtime.cpe_ip)) {
     g_runtime.state = "failed";
@@ -1663,6 +1731,12 @@ int CommandSelfTest() {
   const uint32_t physical_ip = 0xc0a80158;
   const uint32_t cpe_ip = 0xc0a8018c;
   const uint32_t remote_ip = 0x08080808;
+  uint8_t ipv6_packet[40] = {};
+  ipv6_packet[0] = 0x60;
+  if (NatTranslateOutgoing(table.get(), ipv6_packet, sizeof(ipv6_packet), physical_ip, cpe_ip)) {
+    WSACleanup();
+    return SelfTestFail(20, "ipv6 packet should not enter ipv4 tun nat");
+  }
   MakeUdpPacket(packet, &len, tun_ip, remote_ip, 12345, 53);
   if (!NatTranslateOutgoing(table.get(), packet, len, physical_ip, cpe_ip)) {
     WSACleanup();
@@ -1683,6 +1757,28 @@ int CommandSelfTest() {
       ReadU16(reply + 22) != 12345) {
     WSACleanup();
     return SelfTestFail(13, "nat inbound restore failed");
+  }
+  uint8_t tcp_syn[64] = {};
+  tcp_syn[0] = 0x45;
+  tcp_syn[8] = 64;
+  tcp_syn[9] = IPPROTO_TCP;
+  WriteU16(tcp_syn + 2, 44);
+  WriteU32(tcp_syn + 12, tun_ip);
+  WriteU32(tcp_syn + 16, remote_ip);
+  WriteU16(tcp_syn + 20, 44321);
+  WriteU16(tcp_syn + 22, 443);
+  tcp_syn[32] = 0x60;
+  tcp_syn[33] = 0x02;
+  WriteU16(tcp_syn + 34, 65535);
+  tcp_syn[40] = 2;
+  tcp_syn[41] = 4;
+  WriteU16(tcp_syn + 42, 1460);
+  FixIpv4Checksum(tcp_syn, 44);
+  FixTransportChecksum(tcp_syn, 44);
+  if (!ClampTcpMss(tcp_syn, 44, kTcpMssClamp) ||
+      ReadU16(tcp_syn + 42) != kTcpMssClamp) {
+    WSACleanup();
+    return SelfTestFail(21, "tcp mss clamp failed");
   }
   auto dns_table = std::make_unique<NatTable>();
   const uint8_t dns_query_payload[] = {

@@ -73,16 +73,18 @@ static FlValue* unavailable_health(const gchar* host) {
   fl_value_set_string_take(value, "serviceReady", fl_value_new_bool(FALSE));
   fl_value_set_string_take(
       value, "error",
-      fl_value_new_string("TUN native service is not wired yet"));
+      fl_value_new_string("Linux IPv4 TUN backend is not wired yet"));
   return value;
 }
 
 static FlValue* unsupported_status(
     const gchar* state = "stopped",
-    const gchar* message = "Linux /dev/net/tun backend is not wired yet",
+    const gchar* message = "Linux IPv4 TUN backend is not wired yet",
     const gchar* host = kDefaultCpeHost) {
   FlValue* value = fl_value_new_map();
   fl_value_set_string_take(value, "state", fl_value_new_string(state));
+  fl_value_set_string_take(value, "adapterName",
+                           fl_value_new_string("IPv4 TUN 虚拟网卡"));
   fl_value_set_string_take(value, "permission",
                            fl_value_new_string("unsupported"));
   fl_value_set_string_take(value, "cpe", unavailable_health(host));
@@ -142,10 +144,10 @@ static void tray_toggle_cb(GtkMenuItem* item, gpointer user_data) {
   g_autoptr(FlValue) result =
       self->tun_running
           ? unsupported_status("stopped",
-                               "Linux /dev/net/tun backend is not wired yet",
+                               "Linux IPv4 TUN backend is not wired yet",
                                last_cpe_host(self))
           : unsupported_status("failed",
-                               "Linux /dev/net/tun backend is not wired yet",
+                               "Linux IPv4 TUN backend is not wired yet",
                                last_cpe_host(self));
   update_tun_state_from_status(self, result);
   update_tray_icon(self);
@@ -226,7 +228,7 @@ static void tun_method_call_cb(FlMethodChannel* channel,
 
   if (g_strcmp0(method, "status") == 0) {
     g_autoptr(FlValue) result = unsupported_status(
-        "stopped", "Linux /dev/net/tun backend is not wired yet", host);
+        "stopped", "Linux IPv4 TUN backend is not wired yet", host);
     update_tun_state_from_status(self, result);
     update_tray_icon(self);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
@@ -239,21 +241,21 @@ static void tun_method_call_cb(FlMethodChannel* channel,
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "installHelper") == 0) {
     g_autoptr(FlValue) result = unsupported_status(
-        "failed", "Linux /dev/net/tun backend is not wired yet", host);
+        "failed", "Linux IPv4 TUN backend is not wired yet", host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "uninstallHelper") == 0) {
     g_autoptr(FlValue) result = unsupported_status(
-        "stopped", "Linux /dev/net/tun backend is not wired yet", host);
+        "stopped", "Linux IPv4 TUN backend is not wired yet", host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "start") == 0) {
     g_autoptr(FlValue) result = unsupported_status(
-        "failed", "Linux /dev/net/tun backend is not wired yet", host);
+        "failed", "Linux IPv4 TUN backend is not wired yet", host);
     update_tun_state_from_status(self, result);
     update_tray_icon(self);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "stop") == 0) {
     g_autoptr(FlValue) result = unsupported_status(
-        "stopped", "Linux /dev/net/tun backend is not wired yet", host);
+        "stopped", "Linux IPv4 TUN backend is not wired yet", host);
     update_tun_state_from_status(self, result);
     update_tray_icon(self);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
