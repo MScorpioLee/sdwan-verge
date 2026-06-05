@@ -28,6 +28,14 @@ void main() {
     expect(helper, contains('GetIfTable2'));
   });
 
+  test('Windows helper keeps SDK headers in a warning-clean order', () {
+    final helper = readHelper();
+
+    expect(helper, isNot(contains('#define UNICODE')));
+    expect(helper.indexOf('#include <iphlpapi.h>'),
+        lessThan(helper.indexOf('#include <icmpapi.h>')));
+  });
+
   test('Windows health rollback is based on CPE reachability', () {
     final helper = readHelper();
 

@@ -1,12 +1,9 @@
-#define UNICODE
-#define _UNICODE
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <windows.h>
-#include <icmpapi.h>
 #include <iphlpapi.h>
+#include <icmpapi.h>
 
 #include <algorithm>
 #include <atomic>
