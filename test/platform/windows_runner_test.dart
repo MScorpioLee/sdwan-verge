@@ -43,4 +43,10 @@ void main() {
     expect(resources, contains('resources\\\\tray_idle.ico'));
     expect(win32Window, contains('TrayIconResource'));
   });
+
+  test('Windows runner compiles UTF-8 tray labels correctly', () {
+    final cmake = read('windows/runner/CMakeLists.txt');
+
+    expect(cmake, contains('/utf-8'));
+  });
 }
