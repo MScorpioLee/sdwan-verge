@@ -10,10 +10,12 @@ package_macos() {
   local app_path="$ROOT_DIR/build/macos/Build/Products/Release/SD-WAN Verge.app"
   local out_path="$DIST_DIR/sdwan-verge-macos-release.dmg"
   if [[ -d "$app_path" ]]; then
-    local helper_path
-    helper_path="$("$ROOT_DIR/scripts/build_macos_helper.sh")"
-    cp "$helper_path" "$app_path/Contents/Resources/sdwan-macos-helper"
-    chmod 755 "$app_path/Contents/Resources/sdwan-macos-helper"
+    local bundled_helper="$app_path/Contents/Resources/sdwan-macos-helper"
+    if [[ ! -x "$bundled_helper" ]]; then
+      echo "missing executable macOS helper in signed app bundle: $bundled_helper" >&2
+      exit 1
+    fi
+    codesign --verify --deep --strict --verbose=4 "$app_path"
     rm -f "$out_path"
     hdiutil create -volname "SD-WAN Verge" -srcfolder "$app_path" -ov -format UDZO "$out_path"
     echo "packaged $out_path"
