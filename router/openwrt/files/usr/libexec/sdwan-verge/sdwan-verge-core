@@ -30,12 +30,14 @@ append_dns_server() {
 load_settings() {
         CPE_GATEWAY=192.168.1.140
         ENABLED=0
+        MODE=half_route
         SYNC_DNS=1
         DNS_SERVERS=
 
         config_load "$CONFIG"
         config_get CPE_GATEWAY "$SECTION" cpe_gateway "$CPE_GATEWAY"
         config_get_bool ENABLED "$SECTION" enabled "$ENABLED"
+        config_get MODE "$SECTION" mode "$MODE"
         config_get_bool SYNC_DNS "$SECTION" sync_dns "$SYNC_DNS"
         config_list_foreach "$SECTION" dns_server append_dns_server
 
@@ -61,6 +63,13 @@ validate_settings() {
         command -v ip >/dev/null 2>&1 || die "missing ip command"
         command -v uci >/dev/null 2>&1 || die "missing uci command"
         is_ipv4 "$CPE_GATEWAY" || die "invalid CPE gateway: $CPE_GATEWAY"
+        case "$MODE" in
+                half_route|tun)
+                        ;;
+                *)
+                        die "invalid mode: $MODE"
+                        ;;
+        esac
 
         for server in $DNS_SERVERS; do
                 is_ipv4 "$server" || die "invalid DNS server: $server"
@@ -153,10 +162,7 @@ mark_disabled() {
         rm -f "$ACTIVE_FILE"
 }
 
-start_acceleration() {
-        load_settings
-        validate_settings
-
+start_half_route() {
         if ! add_routes; then
                 die "failed to apply routes via $CPE_GATEWAY"
         fi
@@ -167,8 +173,26 @@ start_acceleration() {
         fi
 
         mark_enabled
-        log "SD-WAN Verge started"
-        echo "SD-WAN Verge started via $CPE_GATEWAY"
+        log "SD-WAN Verge half-route started"
+        echo "SD-WAN Verge half-route started via $CPE_GATEWAY"
+}
+
+start_tun() {
+        die "TUN mode is not wired yet on OpenWrt/iStoreOS; use half_route or install a future TUN backend"
+}
+
+start_acceleration() {
+        load_settings
+        validate_settings
+
+        case "$MODE" in
+                half_route)
+                        start_half_route
+                        ;;
+                tun)
+                        start_tun
+                        ;;
+        esac
 }
 
 stop_acceleration() {
@@ -217,6 +241,7 @@ status_json() {
         printf '{'
         printf '"enabled":%s,' "$enabled"
         printf '"active":%s,' "$active"
+        printf '"mode":"%s",' "$MODE"
         printf '"gateway":"%s",' "$CPE_GATEWAY"
         printf '"syncDns":%s,' "$([ "$SYNC_DNS" = "1" ] && echo true || echo false)"
         printf '"routes":{"lower":%s,"upper":%s},' "$lower" "$upper"
@@ -232,6 +257,7 @@ doctor() {
         validate_settings
         [ -x /etc/init.d/dnsmasq ] || die "missing /etc/init.d/dnsmasq"
         echo "SD-WAN Verge doctor OK"
+        echo "mode=$MODE"
         echo "gateway=$CPE_GATEWAY"
         echo "dns_servers=$DNS_SERVERS"
 }

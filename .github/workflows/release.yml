@@ -16,6 +16,7 @@ on:
           - android
           - linux
           - web
+          - openwrt
   push:
     tags:
       - 'v*'
@@ -186,9 +187,22 @@ jobs:
           name: sdwan-verge-web
           path: dist/releases/sdwan-verge-web-release.zip
 
+  openwrt:
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'openwrt' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash router/openwrt/tests/static_test.sh
+      - run: bash scripts/package_openwrt_ipk.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdwan-verge-openwrt
+          path: dist/releases/luci-app-sdwan-verge_*.ipk
+
   release:
     runs-on: ubuntu-24.04
-    needs: [macos, ios, android, linux, windows, web]
+    needs: [macos, ios, android, linux, windows, web, openwrt]
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - uses: actions/download-artifact@v4
@@ -198,3 +212,4 @@ jobs:
         with:
           files: |
             dist/artifacts/**/sdwan-verge-*
+            dist/artifacts/**/luci-app-sdwan-verge_*.ipk

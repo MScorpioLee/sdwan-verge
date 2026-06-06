@@ -8,6 +8,11 @@ The plugin applies the same half-route idea as the original BAT script, but on t
 - `128.0.0.0/1 via 192.168.1.140`
 - optional dnsmasq DNS replacement with `223.5.5.5` and `114.114.114.114`
 
+The LuCI page exposes a mode selector:
+
+- `Half Route`: the stable default. It uses OpenWrt/iStoreOS kernel routing and is the only mode that starts in this package.
+- `TUN`: an experimental placeholder for a future router-side TUN backend. The current package refuses to start this mode instead of pretending to accelerate traffic.
+
 Installing the package does not enable acceleration by itself. The default UCI switch is disabled, so the router does not change routes or DNS until the user starts it.
 
 ## Layout
@@ -35,6 +40,20 @@ make package/luci-app-sdwan-verge/compile V=s
 ```
 
 The generated IPK will be under the SDK output package directory for the selected target.
+
+## Build Repo-Local All-Arch IPK
+
+This package contains LuCI JavaScript, shell scripts, and config files only. For quick testing, the repo can produce an `Architecture: all` IPK without the OpenWrt SDK:
+
+```sh
+bash scripts/package_openwrt_ipk.sh
+```
+
+Output:
+
+```text
+dist/releases/luci-app-sdwan-verge_0.1.0-1_all.ipk
+```
 
 ## Install
 
