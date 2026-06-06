@@ -61,8 +61,13 @@
 #define DNS_PROBE_TIMEOUT_SEC 1
 #define TUN_MTU 1400
 #define TCP_MSS_CLAMP 1360
-#define NAT_PORT_START 42000
+#define NAT_PORT_START 30000
 #define NAT_PORT_END 48999
+#define TCP_ESTABLISHED_TIMEOUT_SEC 300
+#define TCP_SYN_TIMEOUT_SEC 20
+#define TCP_CLOSING_TIMEOUT_SEC 5
+#define UDP_TIMEOUT_SEC 60
+#define ICMP_TIMEOUT_SEC 30
 
 typedef struct {
   char cpe[64];
@@ -93,6 +98,8 @@ typedef struct {
   uint64_t last_rx_bytes;
   time_t last_rate_at;
   time_t last_seen;
+  bool tcp_established;
+  bool closing;
   char domain[256];
 } NatEntry;
 
@@ -514,6 +521,29 @@ static bool is_udp443_packet(const uint8_t *packet, size_t len) {
          parse_ipv4_ports(packet, len, &src_port, &dst_port) && dst_port == 443;
 }
 
+static uint8_t tcp_flags(const uint8_t *packet, size_t len) {
+  if (len < 20 || (packet[0] >> 4) != 4 || packet[9] != IPPROTO_TCP) {
+    return 0;
+  }
+  size_t ihl = (packet[0] & 0x0f) * 4;
+  if (ihl < 20 || len < ihl + 14) {
+    return 0;
+  }
+  return packet[ihl + 13];
+}
+
+static bool tcp_should_close(uint8_t flags) {
+  return (flags & (0x01 | 0x04)) != 0;
+}
+
+static bool tcp_is_syn_only(uint8_t flags) {
+  return (flags & 0x02) != 0 && (flags & 0x10) == 0;
+}
+
+static bool tcp_marks_established(uint8_t flags) {
+  return (flags & 0x10) != 0 && !tcp_is_syn_only(flags);
+}
+
 static bool write_ipv4_src_port(uint8_t *packet, size_t len, uint16_t port) {
   size_t ihl = (packet[0] & 0x0f) * 4;
   uint8_t proto = packet[9];
@@ -694,26 +724,74 @@ static void dns_cache_answers_from_packet(NatTable *table, const uint8_t *packet
   }
 }
 
-static bool nat_port_in_use(NatTable *table, uint8_t proto, uint16_t translated_port) {
+static bool nat_port_in_use(NatTable *table, uint8_t proto, uint16_t translated_port,
+                            uint32_t remote_ip, uint16_t remote_port) {
   for (size_t i = 0; i < MAX_NAT; i++) {
     NatEntry *entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->translated_port == translated_port) {
+    if (entry->used && entry->proto == proto && entry->translated_port == translated_port &&
+        entry->remote_ip == remote_ip && entry->remote_port == remote_port) {
       return true;
     }
   }
   return false;
 }
 
-static uint16_t nat_allocate_port(NatTable *table, uint8_t proto, uint16_t original_port) {
+static uint16_t nat_allocate_port(NatTable *table, uint8_t proto, uint16_t original_port, uint32_t remote_ip,
+                                  uint16_t remote_port) {
   uint16_t range = (uint16_t)(NAT_PORT_END - NAT_PORT_START + 1);
   uint16_t first = (uint16_t)(NAT_PORT_START + (original_port % range));
   for (uint16_t i = 0; i < range; i++) {
     uint16_t candidate = (uint16_t)(NAT_PORT_START + ((first - NAT_PORT_START + i) % range));
-    if (!nat_port_in_use(table, proto, candidate)) {
+    if (!nat_port_in_use(table, proto, candidate, remote_ip, remote_port)) {
       return candidate;
     }
   }
   return 0;
+}
+
+static bool nat_entry_expired(const NatEntry *entry, time_t now) {
+  if (!entry->used) {
+    return false;
+  }
+  time_t idle = now - entry->last_seen;
+  if (entry->proto == IPPROTO_TCP) {
+    if (entry->closing) {
+      return idle > TCP_CLOSING_TIMEOUT_SEC;
+    }
+    return idle > (entry->tcp_established ? TCP_ESTABLISHED_TIMEOUT_SEC : TCP_SYN_TIMEOUT_SEC);
+  }
+  if (entry->proto == IPPROTO_UDP) {
+    return idle > UDP_TIMEOUT_SEC;
+  }
+  if (entry->proto == IPPROTO_ICMP) {
+    return idle > ICMP_TIMEOUT_SEC;
+  }
+  return idle > UDP_TIMEOUT_SEC;
+}
+
+static size_t nat_reap_expired(NatTable *table, time_t now) {
+  size_t reaped = 0;
+  for (size_t i = 0; i < MAX_NAT; i++) {
+    if (nat_entry_expired(&table->entries[i], now)) {
+      memset(&table->entries[i], 0, sizeof(table->entries[i]));
+      reaped++;
+    }
+  }
+  return reaped;
+}
+
+static size_t nat_active_count(const NatTable *table) {
+  size_t active = 0;
+  for (size_t i = 0; i < MAX_NAT; i++) {
+    if (table->entries[i].used) {
+      active++;
+    }
+  }
+  return active;
+}
+
+static void nat_clear(NatTable *table) {
+  memset(table, 0, sizeof(*table));
 }
 
 static NatEntry *nat_find_outgoing(NatTable *table, uint8_t proto, uint32_t original_src_ip,
@@ -733,6 +811,7 @@ static NatEntry *nat_find_outgoing(NatTable *table, uint8_t proto, uint32_t orig
 
 static NatEntry *nat_find_free_slot(NatTable *table) {
   time_t now = time(NULL);
+  nat_reap_expired(table, now);
   NatEntry *free_slot = NULL;
   for (size_t i = 0; i < MAX_NAT; i++) {
     NatEntry *entry = &table->entries[i];
@@ -742,7 +821,7 @@ static NatEntry *nat_find_free_slot(NatTable *table) {
     if (free_slot == NULL || entry->last_seen < free_slot->last_seen) {
       free_slot = entry;
     }
-    if (now - entry->last_seen > 300) {
+    if (nat_entry_expired(entry, now)) {
       return entry;
     }
   }
@@ -780,6 +859,7 @@ static bool nat_translate_outgoing(NatTable *table, uint8_t *packet, size_t len,
   uint32_t original_src_ip = read_u32(packet + 12);
   uint32_t original_remote_ip = read_u32(packet + 16);
   uint32_t remote_ip = should_redirect_dns(proto, dst_port) ? cpe_ip : original_remote_ip;
+  uint8_t flags = proto == IPPROTO_TCP ? tcp_flags(packet, len) : 0;
   NatEntry *entry = nat_find_outgoing(table, proto, original_src_ip, original_remote_ip, src_port, dst_port);
   if (entry == NULL) {
     entry = nat_find_free_slot(table);
@@ -787,7 +867,7 @@ static bool nat_translate_outgoing(NatTable *table, uint8_t *packet, size_t len,
       return false;
     }
     memset(entry, 0, sizeof(*entry));
-    uint16_t translated_port = nat_allocate_port(table, proto, src_port);
+    uint16_t translated_port = nat_allocate_port(table, proto, src_port, remote_ip, dst_port);
     if (translated_port == 0) {
       return false;
     }
@@ -805,6 +885,17 @@ static bool nat_translate_outgoing(NatTable *table, uint8_t *packet, size_t len,
   entry->remote_port = dst_port;
   if (should_redirect_dns(proto, dst_port)) {
     (void)dns_query_domain_from_packet(packet, len, entry->domain, sizeof(entry->domain));
+  }
+  if (proto == IPPROTO_TCP) {
+    if (tcp_is_syn_only(flags)) {
+      entry->tcp_established = false;
+      entry->closing = false;
+    } else if (tcp_marks_established(flags)) {
+      entry->tcp_established = true;
+    }
+    if (tcp_should_close(flags)) {
+      entry->closing = true;
+    }
   }
   entry->tx_bytes += len;
   entry->last_seen = time(NULL);
@@ -839,10 +930,19 @@ static bool nat_translate_incoming(NatTable *table, uint8_t *packet, size_t len,
   if (entry == NULL) {
     return false;
   }
+  uint8_t flags = proto == IPPROTO_TCP ? tcp_flags(packet, len) : 0;
   if (entry->remote_port == 53 && entry->domain[0] != '\0') {
     dns_cache_answers_from_packet(table, packet, len, entry->domain);
   }
   entry->rx_bytes += len;
+  if (proto == IPPROTO_TCP) {
+    if (tcp_marks_established(flags)) {
+      entry->tcp_established = true;
+    }
+    if (tcp_should_close(flags)) {
+      entry->closing = true;
+    }
+  }
   write_u32(packet + 12, entry->original_remote_ip);
   write_u32(packet + 16, entry->original_src_ip);
   if (!write_ipv4_dst_port(packet, len, entry->original_src_port)) {
@@ -1033,6 +1133,7 @@ static int open_bpf(const char *ifname, unsigned int *buffer_len) {
 }
 
 static void update_rates(Runtime *runtime, time_t now) {
+  nat_reap_expired(&runtime->nat, now);
   for (size_t i = 0; i < MAX_NAT; i++) {
     NatEntry *entry = &runtime->nat.entries[i];
     if (!entry->used) {
@@ -1126,12 +1227,13 @@ static void cleanup_pf(Runtime *runtime) {
 }
 
 static void write_state(Runtime *runtime, const char *state, const char *message) {
-  char content[3072];
+  char content[4096];
   snprintf(content, sizeof(content),
            "pid=%d\nstate=%s\nadapterName=IPv4 TUN 虚拟网卡\npermission=ready\ncpe=%s\nifname=%s\nutun=%s\n"
            "message=%s\ntx_bytes=%llu\nrx_bytes=%llu\ntx_rate=%llu\nrx_rate=%llu\n"
            "tx_packets=%llu\nrx_packets=%llu\ntx_dropped=%llu\nrx_dropped=%llu\n"
-           "nat_misses=%llu\nsend_failures=%llu\nudp443_packets=%llu\n",
+           "nat_misses=%llu\nsend_failures=%llu\nudp443_packets=%llu\n"
+           "nat_active=%zu\nnat_capacity=%d\nnat_port_start=%d\nnat_port_end=%d\n",
            getpid(), state, runtime->config.cpe, runtime->physical_ifname,
            runtime->utun_ifname, message == NULL ? "" : message,
            (unsigned long long)runtime->tx_bytes, (unsigned long long)runtime->rx_bytes,
@@ -1139,7 +1241,8 @@ static void write_state(Runtime *runtime, const char *state, const char *message
            (unsigned long long)runtime->tx_packets, (unsigned long long)runtime->rx_packets,
            (unsigned long long)runtime->tx_dropped, (unsigned long long)runtime->rx_dropped,
            (unsigned long long)runtime->nat_misses, (unsigned long long)runtime->send_failures,
-           (unsigned long long)runtime->udp443_packets);
+           (unsigned long long)runtime->udp443_packets, nat_active_count(&runtime->nat),
+           MAX_NAT, NAT_PORT_START, NAT_PORT_END);
   write_text_file(runtime->state_file, content);
 }
 
@@ -1260,6 +1363,7 @@ static void cleanup_and_exit(int code) {
   if (g_runtime.bpf_fd >= 0) {
     close(g_runtime.bpf_fd);
   }
+  nat_clear(&g_runtime.nat);
   write_state(&g_runtime, g_runtime.auto_recovered ? "autoRecovered" : "stopped",
               g_runtime.auto_recovered ? "CPE 异常，已自动回切直连" : "stopped");
   exit(code);
@@ -1650,6 +1754,7 @@ static int command_stop(HelperConfig *config) {
   g_runtime.tun_fd = -1;
   g_runtime.bpf_fd = -1;
   g_runtime.config = *config;
+  nat_clear(&g_runtime.nat);
   path_join(g_runtime.pf_token_file, sizeof(g_runtime.pf_token_file), config->state_dir, "pf_token");
   char value[IFNAMSIZ];
   char state_file[512];
@@ -1747,6 +1852,8 @@ static void print_status(HelperConfig *config) {
   char nat_misses[64] = "0";
   char send_failures[64] = "0";
   char udp443_packets[64] = "0";
+  char nat_active[64] = "0";
+  char nat_capacity[64] = "0";
   char permission[64] = "ready";
   path_join(state_file, sizeof(state_file), config->state_dir, "state");
   path_join(heartbeat_file, sizeof(heartbeat_file), config->state_dir, "heartbeat");
@@ -1764,6 +1871,8 @@ static void print_status(HelperConfig *config) {
   (void)read_state_value(state_file, "nat_misses", nat_misses, sizeof(nat_misses));
   (void)read_state_value(state_file, "send_failures", send_failures, sizeof(send_failures));
   (void)read_state_value(state_file, "udp443_packets", udp443_packets, sizeof(udp443_packets));
+  (void)read_state_value(state_file, "nat_active", nat_active, sizeof(nat_active));
+  (void)read_state_value(state_file, "nat_capacity", nat_capacity, sizeof(nat_capacity));
   if (strcmp(state, "running") != 0) {
     snprintf(tx_rate, sizeof(tx_rate), "0");
     snprintf(rx_rate, sizeof(rx_rate), "0");
@@ -1795,6 +1904,8 @@ static void print_status(HelperConfig *config) {
   printf("nat_misses=%s\n", nat_misses);
   printf("send_failures=%s\n", send_failures);
   printf("udp443_packets=%s\n", udp443_packets);
+  printf("nat_active=%s\n", nat_active);
+  printf("nat_capacity=%s\n", nat_capacity);
   printf("lastError=%s\n", message);
 }
 
@@ -1916,6 +2027,25 @@ static void make_icmp_packet(uint8_t *packet, size_t *len, uint32_t src, uint32_
   *len = 28;
 }
 
+static void make_tcp_packet(uint8_t *packet, size_t *len, uint32_t src, uint32_t dst,
+                            uint16_t sport, uint16_t dport, uint8_t flags) {
+  memset(packet, 0, 40);
+  packet[0] = 0x45;
+  packet[8] = 64;
+  packet[9] = IPPROTO_TCP;
+  write_u16(packet + 2, 40);
+  write_u32(packet + 12, src);
+  write_u32(packet + 16, dst);
+  write_u16(packet + 20, sport);
+  write_u16(packet + 22, dport);
+  packet[32] = 0x50;
+  packet[33] = flags;
+  write_u16(packet + 34, 65535);
+  fix_ipv4_checksum(packet, 40);
+  fix_transport_checksum(packet, 40);
+  *len = 40;
+}
+
 static void append_udp_payload(uint8_t *packet, size_t *len, const uint8_t *payload,
                                size_t payload_len) {
   memcpy(packet + 28, payload, payload_len);
@@ -2014,6 +2144,50 @@ static int command_self_test(void) {
   fix_transport_checksum(tcp_syn, 44);
   if (!clamp_tcp_mss(tcp_syn, 44, 1360) || read_u16(tcp_syn + 42) != 1360) {
     fprintf(stderr, "tcp mss clamp failed\n");
+    return 1;
+  }
+  static NatTable port_table;
+  memset(&port_table, 0, sizeof(port_table));
+  make_tcp_packet(packet, &len, tun_ip, remote_ip, 45000, 443, 0x02);
+  if (!nat_translate_outgoing(&port_table, packet, len, physical_ip, cpe_ip)) {
+    fprintf(stderr, "tcp nat first tuple failed\n");
+    return 1;
+  }
+  uint16_t first_tcp_port = read_u16(packet + 20);
+  make_tcp_packet(packet, &len, tun_ip, 0x01010101, 45000, 443, 0x02);
+  if (!nat_translate_outgoing(&port_table, packet, len, physical_ip, cpe_ip) ||
+      read_u16(packet + 20) != first_tcp_port) {
+    fprintf(stderr, "nat port reuse by remote tuple failed\n");
+    return 1;
+  }
+  static NatTable close_table;
+  memset(&close_table, 0, sizeof(close_table));
+  make_tcp_packet(packet, &len, tun_ip, remote_ip, 45100, 443, 0x02);
+  if (!nat_translate_outgoing(&close_table, packet, len, physical_ip, cpe_ip)) {
+    fprintf(stderr, "tcp nat syn failed\n");
+    return 1;
+  }
+  make_tcp_packet(packet, &len, tun_ip, remote_ip, 45100, 443, 0x11);
+  if (!nat_translate_outgoing(&close_table, packet, len, physical_ip, cpe_ip) ||
+      nat_active_count(&close_table) != 1) {
+    fprintf(stderr, "tcp nat closing mark failed\n");
+    return 1;
+  }
+  nat_reap_expired(&close_table, time(NULL) + TCP_CLOSING_TIMEOUT_SEC + 1);
+  if (nat_active_count(&close_table) != 0) {
+    fprintf(stderr, "tcp nat closing reap failed\n");
+    return 1;
+  }
+  make_tcp_packet(packet, &len, tun_ip, remote_ip, 45101, 443, 0x02);
+  if (!nat_translate_outgoing(&close_table, packet, len, physical_ip, cpe_ip) ||
+      nat_active_count(&close_table) != 1) {
+    fprintf(stderr, "tcp nat post reap reuse failed\n");
+    return 1;
+  }
+  close_table.entries[0].last_seen = time(NULL) - TCP_SYN_TIMEOUT_SEC - 1;
+  nat_reap_expired(&close_table, time(NULL));
+  if (nat_active_count(&close_table) != 0) {
+    fprintf(stderr, "tcp nat syn timeout reap failed\n");
     return 1;
   }
   static NatTable dns_table;

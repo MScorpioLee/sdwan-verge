@@ -51,6 +51,8 @@ void main() {
         natMisses: 4,
         sendFailures: 5,
         udp443Packets: 6,
+        natActive: 7,
+        natCapacity: 16384,
       ),
     );
 
@@ -63,6 +65,8 @@ void main() {
     expect(updated.diagnostics.natMisses, 4);
     expect(updated.diagnostics.sendFailures, 5);
     expect(updated.diagnostics.udp443Packets, 6);
+    expect(updated.diagnostics.natActive, 7);
+    expect(updated.diagnostics.natCapacity, 16384);
   });
 
   test('copyWith can override adapter label', () {

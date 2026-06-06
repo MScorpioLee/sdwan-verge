@@ -37,10 +37,15 @@ constexpr int kTunRouteMetric = 5;
 constexpr int kPhysicalEgressRouteMetric = 50;
 constexpr int kTunMtu = 1400;
 constexpr uint16_t kTcpMssClamp = 1360;
-constexpr uint16_t kNatPortStart = 42000;
+constexpr uint16_t kNatPortStart = 30000;
 constexpr uint16_t kNatPortEnd = 48999;
 constexpr size_t kMaxNat = 16384;
 constexpr size_t kMaxDnsCache = 512;
+constexpr int kTcpEstablishedTimeoutSeconds = 300;
+constexpr int kTcpSynTimeoutSeconds = 20;
+constexpr int kTcpClosingTimeoutSeconds = 5;
+constexpr int kUdpTimeoutSeconds = 60;
+constexpr int kIcmpTimeoutSeconds = 30;
 
 using WINTUN_ADAPTER_HANDLE = void*;
 using WINTUN_SESSION_HANDLE = void*;
@@ -87,6 +92,8 @@ struct NatEntry {
   uint64_t rx_rate = 0;
   time_t last_rate_at = 0;
   time_t last_seen = 0;
+  bool tcp_established = false;
+  bool closing = false;
   char domain[256] = {};
 };
 
@@ -464,6 +471,34 @@ bool IsUdp443Packet(const uint8_t* packet, size_t len) {
          ParseIpv4Ports(packet, len, &src_port, &dst_port) && dst_port == 443;
 }
 
+uint8_t TcpFlags(const uint8_t* packet, size_t len) {
+  if (!IsIpv4Packet(packet, len) || packet[9] != IPPROTO_TCP) {
+    return 0;
+  }
+  const size_t ihl = (packet[0] & 0x0f) * 4;
+  if (ihl < 20 || len < ihl + 14) {
+    return 0;
+  }
+  return packet[ihl + 13];
+}
+
+bool TcpShouldClose(uint8_t flags) {
+  constexpr uint8_t kFin = 0x01;
+  constexpr uint8_t kRst = 0x04;
+  return (flags & (kFin | kRst)) != 0;
+}
+
+bool TcpIsSynOnly(uint8_t flags) {
+  constexpr uint8_t kSyn = 0x02;
+  constexpr uint8_t kAck = 0x10;
+  return (flags & kSyn) != 0 && (flags & kAck) == 0;
+}
+
+bool TcpMarksEstablished(uint8_t flags) {
+  constexpr uint8_t kAck = 0x10;
+  return (flags & kAck) != 0 && !TcpIsSynOnly(flags);
+}
+
 bool WriteIpv4SrcPort(uint8_t* packet, size_t len, uint16_t port) {
   const size_t ihl = (packet[0] & 0x0f) * 4;
   const uint8_t proto = packet[9];
@@ -643,27 +678,76 @@ void DnsCacheAnswersFromPacket(NatTable* table, const uint8_t* packet, size_t le
   }
 }
 
-bool NatPortInUse(NatTable* table, uint8_t proto, uint16_t translated_port) {
+bool NatPortInUse(NatTable* table, uint8_t proto, uint16_t translated_port,
+                  uint32_t remote_ip, uint16_t remote_port) {
   for (size_t i = 0; i < kMaxNat; ++i) {
     NatEntry* entry = &table->entries[i];
-    if (entry->used && entry->proto == proto && entry->translated_port == translated_port) {
+    if (entry->used && entry->proto == proto && entry->translated_port == translated_port &&
+        entry->remote_ip == remote_ip && entry->remote_port == remote_port) {
       return true;
     }
   }
   return false;
 }
 
-uint16_t NatAllocatePort(NatTable* table, uint8_t proto, uint16_t original_port) {
+uint16_t NatAllocatePort(NatTable* table, uint8_t proto, uint16_t original_port, uint32_t remote_ip,
+                         uint16_t remote_port) {
   const uint16_t range = static_cast<uint16_t>(kNatPortEnd - kNatPortStart + 1);
   const uint16_t first = static_cast<uint16_t>(kNatPortStart + (original_port % range));
   for (uint16_t i = 0; i < range; ++i) {
     const uint16_t candidate =
         static_cast<uint16_t>(kNatPortStart + ((first - kNatPortStart + i) % range));
-    if (!NatPortInUse(table, proto, candidate)) {
+    if (!NatPortInUse(table, proto, candidate, remote_ip, remote_port)) {
       return candidate;
     }
   }
   return 0;
+}
+
+bool NatEntryExpired(const NatEntry* entry, time_t now) {
+  if (!entry->used) {
+    return false;
+  }
+  const time_t idle = now - entry->last_seen;
+  if (entry->proto == IPPROTO_TCP) {
+    if (entry->closing) {
+      return idle > kTcpClosingTimeoutSeconds;
+    }
+    return idle > (entry->tcp_established ? kTcpEstablishedTimeoutSeconds
+                                          : kTcpSynTimeoutSeconds);
+  }
+  if (entry->proto == IPPROTO_UDP) {
+    return idle > kUdpTimeoutSeconds;
+  }
+  if (entry->proto == IPPROTO_ICMP) {
+    return idle > kIcmpTimeoutSeconds;
+  }
+  return idle > kUdpTimeoutSeconds;
+}
+
+size_t NatReapExpired(NatTable* table, time_t now) {
+  size_t reaped = 0;
+  for (size_t i = 0; i < kMaxNat; ++i) {
+    if (NatEntryExpired(&table->entries[i], now)) {
+      table->entries[i] = NatEntry();
+      ++reaped;
+    }
+  }
+  return reaped;
+}
+
+size_t NatActiveCount(const NatTable* table) {
+  size_t active = 0;
+  for (size_t i = 0; i < kMaxNat; ++i) {
+    if (table->entries[i].used) {
+      ++active;
+    }
+  }
+  return active;
+}
+
+void NatClear(NatTable* table) {
+  memset(table, 0, sizeof(NatTable));
 }
 
 NatEntry* NatFindOutgoing(NatTable* table, uint8_t proto, uint32_t original_src_ip,
@@ -683,6 +767,7 @@ NatEntry* NatFindOutgoing(NatTable* table, uint8_t proto, uint32_t original_src_
 
 NatEntry* NatFindFreeSlot(NatTable* table) {
   const time_t now = time(nullptr);
+  NatReapExpired(table, now);
   NatEntry* free_slot = nullptr;
   for (size_t i = 0; i < kMaxNat; ++i) {
     NatEntry* entry = &table->entries[i];
@@ -692,7 +777,7 @@ NatEntry* NatFindFreeSlot(NatTable* table) {
     if (free_slot == nullptr || entry->last_seen < free_slot->last_seen) {
       free_slot = entry;
     }
-    if (now - entry->last_seen > 300) {
+    if (NatEntryExpired(entry, now)) {
       return entry;
     }
   }
@@ -730,6 +815,7 @@ bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
   const uint32_t original_src_ip = ReadU32(packet + 12);
   const uint32_t original_remote_ip = ReadU32(packet + 16);
   const uint32_t remote_ip = ShouldRedirectDns(proto, dst_port) ? cpe_ip : original_remote_ip;
+  const uint8_t tcp_flags = proto == IPPROTO_TCP ? TcpFlags(packet, len) : 0;
   NatEntry* entry =
       NatFindOutgoing(table, proto, original_src_ip, original_remote_ip, src_port, dst_port);
   if (entry == nullptr) {
@@ -738,7 +824,8 @@ bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
       return false;
     }
     *entry = NatEntry();
-    const uint16_t translated_port = NatAllocatePort(table, proto, src_port);
+    const uint16_t translated_port =
+        NatAllocatePort(table, proto, src_port, remote_ip, dst_port);
     if (translated_port == 0) {
       return false;
     }
@@ -753,6 +840,17 @@ bool NatTranslateOutgoing(NatTable* table, uint8_t* packet, size_t len,
   entry->remote_port = dst_port;
   if (ShouldRedirectDns(proto, dst_port)) {
     (void)DnsQueryDomainFromPacket(packet, len, entry->domain, sizeof(entry->domain));
+  }
+  if (proto == IPPROTO_TCP) {
+    if (TcpIsSynOnly(tcp_flags)) {
+      entry->tcp_established = false;
+      entry->closing = false;
+    } else if (TcpMarksEstablished(tcp_flags)) {
+      entry->tcp_established = true;
+    }
+    if (TcpShouldClose(tcp_flags)) {
+      entry->closing = true;
+    }
   }
   entry->tx_bytes += len;
   entry->last_seen = time(nullptr);
@@ -784,10 +882,19 @@ bool NatTranslateIncoming(NatTable* table, uint8_t* packet, size_t len, uint32_t
   if (entry == nullptr) {
     return false;
   }
+  const uint8_t tcp_flags = proto == IPPROTO_TCP ? TcpFlags(packet, len) : 0;
   if (entry->remote_port == 53 && entry->domain[0] != '\0') {
     DnsCacheAnswersFromPacket(table, packet, len, entry->domain);
   }
   entry->rx_bytes += len;
+  if (proto == IPPROTO_TCP) {
+    if (TcpMarksEstablished(tcp_flags)) {
+      entry->tcp_established = true;
+    }
+    if (TcpShouldClose(tcp_flags)) {
+      entry->closing = true;
+    }
+  }
   WriteU32(packet + 12, entry->original_remote_ip);
   WriteU32(packet + 16, entry->original_src_ip);
   if (!WriteIpv4DstPort(packet, len, entry->original_src_port)) {
@@ -833,6 +940,25 @@ void MakeIcmpPacket(uint8_t* packet, size_t* len, uint32_t src_ip, uint32_t dst_
   FixTransportChecksum(packet, *len);
 }
 
+void MakeTcpPacket(uint8_t* packet, size_t* len, uint32_t src_ip, uint32_t dst_ip,
+                   uint16_t src_port, uint16_t dst_port, uint8_t flags) {
+  memset(packet, 0, 64);
+  packet[0] = 0x45;
+  packet[8] = 64;
+  packet[9] = IPPROTO_TCP;
+  WriteU16(packet + 2, 40);
+  WriteU32(packet + 12, src_ip);
+  WriteU32(packet + 16, dst_ip);
+  WriteU16(packet + 20, src_port);
+  WriteU16(packet + 22, dst_port);
+  packet[32] = 0x50;
+  packet[33] = flags;
+  WriteU16(packet + 34, 65535);
+  *len = 40;
+  FixIpv4Checksum(packet, *len);
+  FixTransportChecksum(packet, *len);
+}
+
 void AppendUdpPayload(uint8_t* packet, size_t* len, const uint8_t* payload, size_t payload_len) {
   memcpy(packet + *len, payload, payload_len);
   *len += payload_len;
@@ -844,6 +970,7 @@ void AppendUdpPayload(uint8_t* packet, size_t* len, const uint8_t* payload, size
 }
 
 void UpdateRatesLocked(Runtime* runtime, time_t now) {
+  NatReapExpired(&runtime->nat, now);
   if (runtime->last_rate_at == 0) {
     runtime->last_rate_at = now;
     runtime->last_tx_bytes = runtime->tx_bytes;
@@ -968,13 +1095,14 @@ bool LoadWinDivert(WinDivertApi* api) {
          api->send != nullptr && api->calc_checksums != nullptr && api->compile_filter != nullptr;
 }
 
-std::string BuildReturnFilter(const std::string& physical_ip) {
+std::string BuildReturnFilter(const std::string& physical_ip,
+                              const std::string& cpe_ip = kDefaultCpe) {
   return "inbound and ip and ip.DstAddr == " + physical_ip +
          " and ((tcp and tcp.DstPort >= " + std::to_string(kNatPortStart) +
          " and tcp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
          "(udp and udp.DstPort >= " + std::to_string(kNatPortStart) +
          " and udp.DstPort <= " + std::to_string(kNatPortEnd) + ") or "
-         "(icmp and icmp.Type == 0))";
+         "(icmp and icmp.Type == 0 and ip.SrcAddr != " + cpe_ip + "))";
 }
 
 bool ValidateWinDivertFilter(WinDivertApi* api, const std::string& filter, std::string* error) {
@@ -1194,6 +1322,10 @@ std::string StatusTextLocked(Runtime* runtime) {
   out += "natMisses=" + std::to_string(runtime->nat_misses) + "\n";
   out += "sendFailures=" + std::to_string(runtime->send_failures) + "\n";
   out += "udp443Packets=" + std::to_string(runtime->udp443_packets) + "\n";
+  out += "natActive=" + std::to_string(NatActiveCount(&runtime->nat)) + "\n";
+  out += "natCapacity=" + std::to_string(kMaxNat) + "\n";
+  out += "natPortStart=" + std::to_string(kNatPortStart) + "\n";
+  out += "natPortEnd=" + std::to_string(kNatPortEnd) + "\n";
   out += "lastError=" + runtime->last_error + "\n";
   return out;
 }
@@ -1417,7 +1549,7 @@ bool StartAcceleration(const std::string& cpe) {
   g_runtime.nat_misses = 0;
   g_runtime.send_failures = 0;
   g_runtime.udp443_packets = 0;
-  memset(&g_runtime.nat, 0, sizeof(g_runtime.nat));
+  NatClear(&g_runtime.nat);
   if (!ParseIpv4(g_runtime.cpe.c_str(), &g_runtime.cpe_ip)) {
     g_runtime.state = "failed";
     g_runtime.last_error = "invalid cpe ip";
@@ -1444,7 +1576,7 @@ bool StartAcceleration(const std::string& cpe) {
     return false;
   }
   const std::string physical_ip = Ipv4ToString(g_runtime.physical.ip);
-  const std::string filter = BuildReturnFilter(physical_ip);
+  const std::string filter = BuildReturnFilter(physical_ip, g_runtime.cpe);
   std::string filter_error;
   if (!ValidateWinDivertFilter(&g_runtime.windivert, filter, &filter_error)) {
     g_runtime.state = "failed";
@@ -1527,6 +1659,7 @@ void StopAcceleration(const std::string& reason, bool auto_recovered) {
     if (!g_runtime.running.load() && g_runtime.state != "starting") {
       g_runtime.state = auto_recovered ? "autoRecovered" : "stopped";
       g_runtime.last_error = auto_recovered ? reason : "";
+      NatClear(&g_runtime.nat);
       return;
     }
     g_runtime.state = "stopping";
@@ -1562,6 +1695,7 @@ void StopAcceleration(const std::string& reason, bool auto_recovered) {
   g_runtime.running = false;
   g_runtime.state = auto_recovered ? "autoRecovered" : "stopped";
   g_runtime.last_error = auto_recovered ? reason : "";
+  NatClear(&g_runtime.nat);
   LogEvent(auto_recovered ? "CPE abnormal, auto rollback completed"
                           : "Windows TUN acceleration stopped");
 }
@@ -1809,9 +1943,14 @@ int CommandSelfTest() {
     return SelfTestFail(18, "windivert api load failed");
   }
   std::string filter_error;
-  if (!ValidateWinDivertFilter(&divert_api, BuildReturnFilter("192.168.1.88"), &filter_error)) {
+  const std::string return_filter = BuildReturnFilter("192.168.1.88");
+  if (!ValidateWinDivertFilter(&divert_api, return_filter, &filter_error)) {
     WSACleanup();
     return SelfTestFail(19, filter_error.c_str());
+  }
+  if (return_filter.find("ip.SrcAddr != 192.168.1.140") == std::string::npos) {
+    WSACleanup();
+    return SelfTestFail(24, "return filter must not capture CPE health ping replies");
   }
   uint8_t packet[256] = {};
   size_t len = 0;
@@ -1883,6 +2022,48 @@ int CommandSelfTest() {
       ReadU16(tcp_syn + 42) != kTcpMssClamp) {
     WSACleanup();
     return SelfTestFail(21, "tcp mss clamp failed");
+  }
+  auto port_table = std::make_unique<NatTable>();
+  MakeTcpPacket(packet, &len, tun_ip, remote_ip, 45000, 443, 0x02);
+  if (!NatTranslateOutgoing(port_table.get(), packet, len, physical_ip, cpe_ip)) {
+    WSACleanup();
+    return SelfTestFail(25, "tcp nat first tuple failed");
+  }
+  const uint16_t first_tcp_port = ReadU16(packet + 20);
+  MakeTcpPacket(packet, &len, tun_ip, 0x01010101, 45000, 443, 0x02);
+  if (!NatTranslateOutgoing(port_table.get(), packet, len, physical_ip, cpe_ip) ||
+      ReadU16(packet + 20) != first_tcp_port) {
+    WSACleanup();
+    return SelfTestFail(26, "nat port reuse by remote tuple failed");
+  }
+  auto close_table = std::make_unique<NatTable>();
+  MakeTcpPacket(packet, &len, tun_ip, remote_ip, 45100, 443, 0x02);
+  if (!NatTranslateOutgoing(close_table.get(), packet, len, physical_ip, cpe_ip)) {
+    WSACleanup();
+    return SelfTestFail(27, "tcp nat syn failed");
+  }
+  MakeTcpPacket(packet, &len, tun_ip, remote_ip, 45100, 443, 0x11);
+  if (!NatTranslateOutgoing(close_table.get(), packet, len, physical_ip, cpe_ip) ||
+      NatActiveCount(close_table.get()) != 1) {
+    WSACleanup();
+    return SelfTestFail(28, "tcp nat closing mark failed");
+  }
+  NatReapExpired(close_table.get(), time(nullptr) + kTcpClosingTimeoutSeconds + 1);
+  if (NatActiveCount(close_table.get()) != 0) {
+    WSACleanup();
+    return SelfTestFail(29, "tcp nat closing reap failed");
+  }
+  MakeTcpPacket(packet, &len, tun_ip, remote_ip, 45101, 443, 0x02);
+  if (!NatTranslateOutgoing(close_table.get(), packet, len, physical_ip, cpe_ip) ||
+      NatActiveCount(close_table.get()) != 1) {
+    WSACleanup();
+    return SelfTestFail(30, "tcp nat post reap reuse failed");
+  }
+  close_table->entries[0].last_seen = time(nullptr) - kTcpSynTimeoutSeconds - 1;
+  NatReapExpired(close_table.get(), time(nullptr));
+  if (NatActiveCount(close_table.get()) != 0) {
+    WSACleanup();
+    return SelfTestFail(31, "tcp nat syn timeout reap failed");
   }
   auto dns_table = std::make_unique<NatTable>();
   const uint8_t dns_query_payload[] = {

@@ -48,6 +48,8 @@ class TunDiagnostics {
     this.natMisses = 0,
     this.sendFailures = 0,
     this.udp443Packets = 0,
+    this.natActive = 0,
+    this.natCapacity = 0,
   });
 
   final int txPackets;
@@ -57,6 +59,8 @@ class TunDiagnostics {
   final int natMisses;
   final int sendFailures;
   final int udp443Packets;
+  final int natActive;
+  final int natCapacity;
 
   bool get hasWarnings =>
       txDropped > 0 ||
@@ -75,7 +79,9 @@ class TunDiagnostics {
             other.rxDropped == rxDropped &&
             other.natMisses == natMisses &&
             other.sendFailures == sendFailures &&
-            other.udp443Packets == udp443Packets;
+            other.udp443Packets == udp443Packets &&
+            other.natActive == natActive &&
+            other.natCapacity == natCapacity;
   }
 
   @override
@@ -87,6 +93,8 @@ class TunDiagnostics {
     natMisses,
     sendFailures,
     udp443Packets,
+    natActive,
+    natCapacity,
   );
 }
 

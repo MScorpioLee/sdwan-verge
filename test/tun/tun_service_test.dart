@@ -34,6 +34,8 @@ void main() {
             'natMisses': 4,
             'sendFailures': 5,
             'udp443Packets': 6,
+            'natActive': 7,
+            'natCapacity': 16384,
             'cpe': {
               'host': '192.168.1.140',
               'reachable': true,
@@ -62,6 +64,8 @@ void main() {
     expect(status.diagnostics.natMisses, 4);
     expect(status.diagnostics.sendFailures, 5);
     expect(status.diagnostics.udp443Packets, 6);
+    expect(status.diagnostics.natActive, 7);
+    expect(status.diagnostics.natCapacity, 16384);
   });
 
   test('sends updated CPE host with native calls', () async {
@@ -161,6 +165,30 @@ void main() {
     expect(logs.first.time, '2026-06-04 12:00:00');
     expect(logs.first.message, '开启 TUN');
     expect(logs.last.message, '自动回退');
+  });
+
+  test('drops blank and legacy epoch native log entries', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          expect(call.method, 'logs');
+          return [
+            {
+              'time': '1970-01-01 08:00:00',
+              'message': 'Windows helper installed',
+            },
+            {'time': '2026-06-04 12:00:00', 'message': ''},
+            {
+              'time': '2026-06-04 12:00:01',
+              'message': 'Windows TUN acceleration started',
+            },
+          ];
+        });
+    final service = MethodChannelTunService(channel: channel);
+
+    final logs = await service.logs();
+
+    expect(logs, hasLength(1));
+    expect(logs.single.message, 'Windows TUN acceleration started');
   });
 
   test('maps native launch-at-login status and update calls', () async {

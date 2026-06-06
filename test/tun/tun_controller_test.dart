@@ -333,6 +333,37 @@ void main() {
   });
 
   test(
+    'health poll syncs externally started helper while UI is stopped',
+    () async {
+      final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          permission: TunPermission.ready,
+          helperInstalled: true,
+        ),
+      );
+      final controller = TunController(service: service);
+      await controller.initialize();
+
+      service.currentStatus = TunStatus.defaults().copyWith(
+        state: TunState.running,
+        permission: TunPermission.ready,
+        helperInstalled: true,
+        cpe: const CpeHealth(
+          host: '192.168.1.140',
+          reachable: true,
+          serviceReady: true,
+        ),
+      );
+
+      await controller.checkHealthOnce();
+
+      expect(service.calls, ['status', 'status', 'connections']);
+      expect(controller.status.state, TunState.running);
+      expect(controller.status.cpe.reachable, isTrue);
+    },
+  );
+
+  test(
     'changing CPE host re-runs health and status with new address',
     () async {
       final service = FakeTunService(
@@ -513,8 +544,13 @@ void main() {
   test(
     'refreshConnections reverse-resolves missing domains without replacing DNS cache hits',
     () async {
-      final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      const now = '9999999999';
       final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          state: TunState.running,
+          permission: TunPermission.ready,
+          helperInstalled: true,
+        ),
         connectionLogs: [
           TunConnection(
             lastSeen: now,
@@ -542,6 +578,7 @@ void main() {
         service: service,
         domainResolver: resolver,
       );
+      await controller.initialize();
 
       await controller.refreshConnections();
       await pumpEventQueue();
@@ -549,14 +586,20 @@ void main() {
       expect(controller.connections.first.domain, 'dns.google');
       expect(controller.connections.last.domain, 'example.com');
       expect(resolver.calls, ['8.8.8.8']);
+      controller.dispose();
     },
   );
 
   test(
     'refreshConnections drops stale entries and rebases totals when retention is off',
     () async {
-      final now = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      const now = '9999999999';
       final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          state: TunState.running,
+          permission: TunPermission.ready,
+          helperInstalled: true,
+        ),
         connectionLogs: [
           const TunConnection(
             lastSeen: '1',
@@ -578,9 +621,14 @@ void main() {
           ),
         ],
       );
-      final controller = TunController(service: service);
+      final controller = TunController(
+        service: service,
+        domainResolver: FakeDomainResolver({}),
+      );
+      await controller.initialize();
 
       await controller.refreshConnections();
+      await pumpEventQueue();
       expect(controller.connections, hasLength(1));
       expect(controller.connections.single.target, '8.8.8.8:443');
       expect(controller.connections.single.txBytes, 0);
@@ -598,9 +646,42 @@ void main() {
         ),
       ];
       await controller.refreshConnections();
+      await pumpEventQueue();
 
       expect(controller.connections.single.txBytes, 200);
       expect(controller.connections.single.rxBytes, 100);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'refreshConnections clears stopped-session entries when retention is off',
+    () async {
+      final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          state: TunState.stopped,
+          permission: TunPermission.ready,
+          helperInstalled: true,
+        ),
+        connectionLogs: const [
+          TunConnection(
+            lastSeen: '9999999999',
+            proto: 'TCP',
+            source: '10.255.0.2:50000',
+            target: '8.8.8.8:443',
+            via: '8.8.8.8:443',
+            txBytes: 500,
+            rxBytes: 1000,
+          ),
+        ],
+      );
+      final controller = TunController(service: service);
+      await controller.initialize();
+
+      await controller.refreshConnections();
+
+      expect(controller.connections, isEmpty);
+      expect(service.calls, ['status']);
     },
   );
 

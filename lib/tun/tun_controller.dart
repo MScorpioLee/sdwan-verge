@@ -223,6 +223,11 @@ class TunController extends ChangeNotifier {
   }
 
   Future<void> refreshConnections({int limit = 80}) async {
+    if (!_retainTrafficHistory && _status.state != TunState.running) {
+      _connections = const [];
+      notifyListeners();
+      return;
+    }
     final connections = await _service.connections(limit: limit);
     _connections = _withDisplayConnections(connections);
     notifyListeners();
@@ -295,6 +300,13 @@ class TunController extends ChangeNotifier {
 
   Future<void> checkHealthOnce() async {
     if (_status.state != TunState.running) {
+      _status = _withDisplayTraffic(await _service.status());
+      _recordTrafficSample(_status.traffic);
+      if (_status.state == TunState.running) {
+        _consecutiveFailures = 0;
+        await refreshConnections();
+      }
+      notifyListeners();
       return;
     }
 
@@ -336,7 +348,7 @@ class TunController extends ChangeNotifier {
   }
 
   void _syncPollingWithState() {
-    if (_status.state == TunState.running) {
+    if (_status.state == TunState.running || _status.helperInstalled) {
       startHealthPolling();
     } else {
       _stopPolling();

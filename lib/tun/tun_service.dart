@@ -287,6 +287,8 @@ class MethodChannelTunService implements TunService {
         natMisses: _intFromValue(value['natMisses']),
         sendFailures: _intFromValue(value['sendFailures']),
         udp443Packets: _intFromValue(value['udp443Packets']),
+        natActive: _intFromValue(value['natActive']),
+        natCapacity: _intFromValue(value['natCapacity']),
       ),
       lastError: recoveredButHealthy ? null : value['lastError'] as String?,
     );
@@ -338,14 +340,20 @@ class MethodChannelTunService implements TunService {
     if (rawValue is! List) {
       return const [];
     }
-    return [
-      for (final item in rawValue)
-        if (_stringMap(item) case final value?)
-          TunEventLog(
-            time: value['time']?.toString() ?? '',
-            message: value['message']?.toString() ?? '',
-          ),
-    ];
+    final logs = <TunEventLog>[];
+    for (final item in rawValue) {
+      final value = _stringMap(item);
+      if (value == null) {
+        continue;
+      }
+      final time = value['time']?.toString().trim() ?? '';
+      final message = value['message']?.toString().trim() ?? '';
+      if (message.isEmpty || time.startsWith('1970-01-01')) {
+        continue;
+      }
+      logs.add(TunEventLog(time: time, message: message));
+    }
+    return logs;
   }
 
   List<TunConnection> _connectionsFromList(Object? rawValue) {

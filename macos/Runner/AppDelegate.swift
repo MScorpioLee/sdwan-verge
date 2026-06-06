@@ -260,6 +260,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
         "natMisses": 0,
         "sendFailures": 0,
         "udp443Packets": 0,
+        "natActive": 0,
+        "natCapacity": 0,
       ]
       if installedHelperNeedsUpdate() {
         status["lastError"] = "助手版本已更新，请重新授权安装"
@@ -364,6 +366,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "natMisses": intFromPair(pairs["nat_misses"]),
       "sendFailures": intFromPair(pairs["send_failures"]),
       "udp443Packets": intFromPair(pairs["udp443_packets"]),
+      "natActive": intFromPair(pairs["nat_active"]),
+      "natCapacity": intFromPair(pairs["nat_capacity"]),
     ]
     if let lastError = pairs["lastError"] ?? pairs["message"],
        !lastError.isEmpty,

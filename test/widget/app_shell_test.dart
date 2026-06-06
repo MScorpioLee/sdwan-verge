@@ -197,6 +197,9 @@ void main() {
     expect(find.text('连接统计'), findsNothing);
     expect(find.text('开启 TUN'), findsOneWidget);
 
+    await tunController.start();
+    await tester.pumpAndSettle();
+
     // 连接统计独立成页，不混在事件日志里。
     await tester.tap(find.text('连接'));
     await tester.pumpAndSettle();
@@ -212,6 +215,8 @@ void main() {
     expect(find.text('dns.google'), findsWidgets);
     expect(find.textContaining('11 B/s'), findsWidgets);
     expect(find.textContaining('93.184.216.34:443'), findsOneWidget);
+    expect(find.textContaining('出口 93.184.216.34:443'), findsNothing);
+    expect(find.textContaining('出口 192.168.1.140:53'), findsOneWidget);
 
     await tester.tap(find.text('测速'));
     await tester.pumpAndSettle();
@@ -247,6 +252,7 @@ void main() {
     expect(find.text('桌面端'), findsNothing);
     expect(find.text('手机端'), findsNothing);
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
+    tunController.dispose();
   });
 
   testWidgets('后端不支持时禁用开启按钮并显示错误', (tester) async {
@@ -319,5 +325,6 @@ void main() {
 
     expect(find.text('已授权'), findsOneWidget);
     expect(find.byTooltip('卸载助手'), findsOneWidget);
+    tunController.dispose();
   });
 }

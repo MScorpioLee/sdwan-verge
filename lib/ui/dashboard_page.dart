@@ -481,6 +481,16 @@ class _DiagnosticsCard extends StatelessWidget {
                 value: diagnostics.udp443Packets.toString(),
                 icon: Icons.bolt_rounded,
               ),
+              _TrafficMetric(
+                label: 'NAT 活跃',
+                value: diagnostics.natActive.toString(),
+                icon: Icons.hub_rounded,
+              ),
+              _TrafficMetric(
+                label: 'NAT 容量',
+                value: diagnostics.natCapacity.toString(),
+                icon: Icons.inventory_2_rounded,
+              ),
             ],
           ),
         ],

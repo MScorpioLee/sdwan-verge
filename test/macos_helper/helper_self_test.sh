@@ -14,7 +14,7 @@ grep -q "/sbin/route -n add -host 192.168.1.140 -interface en0" <<<"$PLAN_OUTPUT
 grep -q "/sbin/route -n add 0.0.0.0/1 -interface utun9" <<<"$PLAN_OUTPUT"
 grep -q "/sbin/route -n add 128.0.0.0/1 -interface utun9" <<<"$PLAN_OUTPUT"
 grep -q "/sbin/pfctl -a com.apple/sdwan-verge -f -" <<<"$PLAN_OUTPUT"
-grep -q "block in quick on en0 proto { tcp udp } from any to <physical_ip> port 42000:48999" <<<"$PLAN_OUTPUT"
+grep -q "block in quick on en0 proto { tcp udp } from any to <physical_ip> port 30000:48999" <<<"$PLAN_OUTPUT"
 grep -q "PLAN_ONLY_NO_CHANGES_APPLIED" <<<"$PLAN_OUTPUT"
 
 STATUS_OUTPUT="$("$HELPER" status)"
@@ -30,6 +30,8 @@ grep -q "rx_dropped=" <<<"$STATUS_OUTPUT"
 grep -q "nat_misses=" <<<"$STATUS_OUTPUT"
 grep -q "send_failures=" <<<"$STATUS_OUTPUT"
 grep -q "udp443_packets=" <<<"$STATUS_OUTPUT"
+grep -q "nat_active=" <<<"$STATUS_OUTPUT"
+grep -q "nat_capacity=" <<<"$STATUS_OUTPUT"
 
 TMP_STATE="$(mktemp -d)"
 trap 'rm -rf "$TMP_STATE"' EXIT
