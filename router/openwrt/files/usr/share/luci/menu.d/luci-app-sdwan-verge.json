@@ -4,7 +4,7 @@
     "order": 60,
     "action": {
       "type": "view",
-      "path": "sdwan-verge/status"
+      "path": "sdwan-verge/dashboard"
     },
     "depends": {
       "acl": [

@@ -5,12 +5,17 @@ SECTION=main
 STATE_DIR=/tmp/sdwan-verge
 LOG_FILE=$STATE_DIR/sdwan-verge.log
 ACTIVE_FILE=$STATE_DIR/active
+ACTIVE_MODE_FILE=$STATE_DIR/mode
+TRAFFIC_BASELINE=$STATE_DIR/traffic.baseline
+TRAFFIC_PREVIOUS=$STATE_DIR/traffic.previous
 BACKUP_DIR=/etc/sdwan-verge
 DNS_BACKUP=$BACKUP_DIR/dnsmasq-server.backup
 LOWER_ROUTE=0.0.0.0/1
 UPPER_ROUTE=128.0.0.0/1
 
 . /lib/functions.sh
+
+COMMANDS="start stop restart status traffic sites set-dns restore-dns logs doctor uninstall"
 
 log() {
         mkdir -p "$STATE_DIR"
@@ -23,26 +28,51 @@ die() {
         exit 1
 }
 
+json_escape() {
+        printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 append_dns_server() {
         DNS_SERVERS="$DNS_SERVERS $1"
+}
+
+append_test_site() {
+        TEST_SITES="${TEST_SITES}
+$1"
 }
 
 load_settings() {
         CPE_GATEWAY=192.168.1.140
         ENABLED=0
         MODE=half_route
+        TUN_INTERFACE=sdwan-tun0
+        TUN_BACKEND=/usr/libexec/sdwan-verge/sdwan-verge-tun
         SYNC_DNS=1
         DNS_SERVERS=
+        TEST_SITES=
 
         config_load "$CONFIG"
         config_get CPE_GATEWAY "$SECTION" cpe_gateway "$CPE_GATEWAY"
         config_get_bool ENABLED "$SECTION" enabled "$ENABLED"
         config_get MODE "$SECTION" mode "$MODE"
+        config_get TUN_INTERFACE "$SECTION" tun_interface "$TUN_INTERFACE"
+        config_get TUN_BACKEND "$SECTION" tun_backend "$TUN_BACKEND"
         config_get_bool SYNC_DNS "$SECTION" sync_dns "$SYNC_DNS"
         config_list_foreach "$SECTION" dns_server append_dns_server
+        config_list_foreach "$SECTION" test_site append_test_site
 
         if [ -z "$DNS_SERVERS" ]; then
                 DNS_SERVERS="223.5.5.5 114.114.114.114"
+        fi
+
+        if [ -z "$(printf '%s' "$TEST_SITES" | tr -d '\n')" ]; then
+                TEST_SITES="
+Google|https://www.google.com/generate_204
+YouTube|https://www.youtube.com/generate_204
+Claude|https://claude.ai/
+Amazon|https://www.amazon.com/
+GitHub|https://github.com/
+OpenAI|https://openai.com/"
         fi
 }
 
@@ -59,10 +89,15 @@ is_ipv4() {
         '
 }
 
+is_iface_name() {
+        echo "$1" | grep -Eq '^[A-Za-z0-9_.:-]+$'
+}
+
 validate_settings() {
         command -v ip >/dev/null 2>&1 || die "missing ip command"
         command -v uci >/dev/null 2>&1 || die "missing uci command"
         is_ipv4 "$CPE_GATEWAY" || die "invalid CPE gateway: $CPE_GATEWAY"
+        is_iface_name "$TUN_INTERFACE" || die "invalid TUN interface: $TUN_INTERFACE"
         case "$MODE" in
                 half_route|tun)
                         ;;
@@ -149,17 +184,156 @@ restore_dns() {
         restart_dnsmasq
 }
 
+route_iface() {
+        ip -4 route get "$CPE_GATEWAY" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1
+}
+
+traffic_iface() {
+        if [ "$(active_mode)" = "tun" ] && ip link show "$TUN_INTERFACE" >/dev/null 2>&1; then
+                printf '%s\n' "$TUN_INTERFACE"
+        else
+                route_iface
+        fi
+}
+
+read_counter() {
+        local iface=$1
+        local field=$2
+        local path=/sys/class/net/$iface/statistics/$field
+        if [ -r "$path" ]; then
+                cat "$path"
+        else
+                printf '0\n'
+        fi
+}
+
+write_traffic_snapshot() {
+        local path=$1
+        local iface=$2
+        local now=$3
+        local rx=$4
+        local tx=$5
+        mkdir -p "$STATE_DIR"
+        printf '%s %s %s %s\n' "$now" "$iface" "$rx" "$tx" >"$path"
+}
+
+init_traffic_baseline() {
+        local iface now rx tx
+        iface=$(traffic_iface)
+        [ -n "$iface" ] || return 0
+        now=$(date +%s)
+        rx=$(read_counter "$iface" rx_bytes)
+        tx=$(read_counter "$iface" tx_bytes)
+        write_traffic_snapshot "$TRAFFIC_BASELINE" "$iface" "$now" "$rx" "$tx"
+        write_traffic_snapshot "$TRAFFIC_PREVIOUS" "$iface" "$now" "$rx" "$tx"
+}
+
+number_delta() {
+        awk -v current="$1" -v previous="$2" 'BEGIN { d=current-previous; if (d < 0) d=0; printf "%.0f", d }'
+}
+
+number_rate() {
+        awk -v bytes="$1" -v seconds="$2" 'BEGIN { if (seconds < 1) seconds=1; printf "%.0f", bytes/seconds }'
+}
+
+traffic_json() {
+        load_settings
+        local iface now rx tx base_now base_iface base_rx base_tx prev_now prev_iface prev_rx prev_tx elapsed rx_delta tx_delta rx_rate tx_rate rx_total tx_total
+        iface=$(traffic_iface)
+        now=$(date +%s)
+
+        if [ -z "$iface" ]; then
+                printf '{"interface":"","rxBytes":0,"txBytes":0,"rxRate":0,"txRate":0,"active":false}\n'
+                return 0
+        fi
+
+        rx=$(read_counter "$iface" rx_bytes)
+        tx=$(read_counter "$iface" tx_bytes)
+
+        if [ -f "$TRAFFIC_BASELINE" ]; then
+                read -r base_now base_iface base_rx base_tx <"$TRAFFIC_BASELINE"
+        else
+                base_now=$now
+                base_iface=$iface
+                base_rx=$rx
+                base_tx=$tx
+                write_traffic_snapshot "$TRAFFIC_BASELINE" "$iface" "$now" "$rx" "$tx"
+        fi
+
+        if [ "$base_iface" != "$iface" ]; then
+                base_now=$now
+                base_iface=$iface
+                base_rx=$rx
+                base_tx=$tx
+                write_traffic_snapshot "$TRAFFIC_BASELINE" "$iface" "$now" "$rx" "$tx"
+        fi
+
+        if [ -f "$TRAFFIC_PREVIOUS" ]; then
+                read -r prev_now prev_iface prev_rx prev_tx <"$TRAFFIC_PREVIOUS"
+        else
+                prev_now=$now
+                prev_iface=$iface
+                prev_rx=$rx
+                prev_tx=$tx
+        fi
+
+        if [ "$prev_iface" != "$iface" ]; then
+                prev_now=$now
+                prev_rx=$rx
+                prev_tx=$tx
+        fi
+
+        elapsed=$((now - prev_now))
+        rx_delta=$(number_delta "$rx" "$prev_rx")
+        tx_delta=$(number_delta "$tx" "$prev_tx")
+        rx_rate=$(number_rate "$rx_delta" "$elapsed")
+        tx_rate=$(number_rate "$tx_delta" "$elapsed")
+        rx_total=$(number_delta "$rx" "$base_rx")
+        tx_total=$(number_delta "$tx" "$base_tx")
+        write_traffic_snapshot "$TRAFFIC_PREVIOUS" "$iface" "$now" "$rx" "$tx"
+
+        printf '{'
+        printf '"interface":"%s",' "$(json_escape "$iface")"
+        printf '"rxBytes":%s,' "$rx_total"
+        printf '"txBytes":%s,' "$tx_total"
+        printf '"rxRate":%s,' "$rx_rate"
+        printf '"txRate":%s,' "$tx_rate"
+        printf '"active":%s' "$([ "$ENABLED" = "1" ] && echo true || echo false)"
+        printf '}\n'
+}
+
+tun_available() {
+        [ -c /dev/net/tun ]
+}
+
+tun_backend_ready() {
+        [ -x "$TUN_BACKEND" ]
+}
+
+tun_active() {
+        ip link show "$TUN_INTERFACE" >/dev/null 2>&1
+}
+
+active_mode() {
+        if [ -f "$ACTIVE_MODE_FILE" ]; then
+                cat "$ACTIVE_MODE_FILE"
+        else
+                printf '%s\n' "$MODE"
+        fi
+}
+
 mark_enabled() {
         uci set "$CONFIG.$SECTION.enabled=1"
         uci commit "$CONFIG"
         mkdir -p "$STATE_DIR"
         printf '%s\n' "$CPE_GATEWAY" >"$ACTIVE_FILE"
+        printf '%s\n' "$MODE" >"$ACTIVE_MODE_FILE"
 }
 
 mark_disabled() {
         uci set "$CONFIG.$SECTION.enabled=0"
         uci commit "$CONFIG"
-        rm -f "$ACTIVE_FILE"
+        rm -f "$ACTIVE_FILE" "$ACTIVE_MODE_FILE" "$TRAFFIC_BASELINE" "$TRAFFIC_PREVIOUS"
 }
 
 start_half_route() {
@@ -173,12 +347,35 @@ start_half_route() {
         fi
 
         mark_enabled
+        init_traffic_baseline
         log "SD-WAN Verge half-route started"
         echo "SD-WAN Verge half-route started via $CPE_GATEWAY"
 }
 
 start_tun() {
-        die "TUN mode is not wired yet on OpenWrt/iStoreOS; use half_route or install a future TUN backend"
+        tun_available || die "missing /dev/net/tun; install kmod-tun first"
+        tun_backend_ready || die "missing executable TUN backend: $TUN_BACKEND"
+
+        "$TUN_BACKEND" start "$TUN_INTERFACE" "$CPE_GATEWAY" || die "failed to start TUN backend"
+
+        if ! set_dns; then
+                "$TUN_BACKEND" stop "$TUN_INTERFACE" "$CPE_GATEWAY" >/dev/null 2>&1 || true
+                die "failed to apply DNS; TUN backend stopped"
+        fi
+
+        mark_enabled
+        init_traffic_baseline
+        log "SD-WAN Verge TUN started through $TUN_BACKEND"
+        echo "SD-WAN Verge TUN started on $TUN_INTERFACE via $CPE_GATEWAY"
+}
+
+stop_tun() {
+        if tun_backend_ready; then
+                "$TUN_BACKEND" stop "$TUN_INTERFACE" "$CPE_GATEWAY" >/dev/null 2>&1 || true
+        else
+                ip link del "$TUN_INTERFACE" 2>/dev/null || true
+        fi
+        log "TUN stopped"
 }
 
 start_acceleration() {
@@ -198,7 +395,15 @@ start_acceleration() {
 stop_acceleration() {
         load_settings
         validate_settings
-        delete_routes
+
+        case "$(active_mode)" in
+                tun)
+                        stop_tun
+                        ;;
+                *)
+                        delete_routes
+                        ;;
+        esac
 
         if ! restore_dns; then
                 die "failed to restore DNS"
@@ -210,7 +415,7 @@ stop_acceleration() {
 }
 
 json_dns_servers() {
-        first=1
+        local first=1
         printf '['
         for server in $DNS_SERVERS; do
                 if [ "$first" = "1" ]; then
@@ -218,48 +423,133 @@ json_dns_servers() {
                 else
                         printf ','
                 fi
-                printf '"%s"' "$server"
+                printf '"%s"' "$(json_escape "$server")"
         done
         printf ']'
 }
 
 status_json() {
         load_settings
-        lower=false
-        upper=false
-        active=false
-        enabled=false
+        local lower=false upper=false active=false enabled=false tun_ready=false tun_device=false tun_link=false current_mode
 
         [ "$ENABLED" = "1" ] && enabled=true
         route_present "$LOWER_ROUTE" && lower=true
         route_present "$UPPER_ROUTE" && upper=true
+        tun_available && tun_device=true
+        tun_backend_ready && tun_ready=true
+        tun_active && tun_link=true
+        current_mode=$(active_mode)
 
-        if [ "$lower" = "true" ] && [ "$upper" = "true" ]; then
+        if [ "$current_mode" = "tun" ]; then
+                [ "$tun_link" = "true" ] && active=true
+        elif [ "$lower" = "true" ] && [ "$upper" = "true" ]; then
                 active=true
         fi
 
         printf '{'
         printf '"enabled":%s,' "$enabled"
         printf '"active":%s,' "$active"
-        printf '"mode":"%s",' "$MODE"
-        printf '"gateway":"%s",' "$CPE_GATEWAY"
+        printf '"mode":"%s",' "$(json_escape "$MODE")"
+        printf '"activeMode":"%s",' "$(json_escape "$current_mode")"
+        printf '"gateway":"%s",' "$(json_escape "$CPE_GATEWAY")"
         printf '"syncDns":%s,' "$([ "$SYNC_DNS" = "1" ] && echo true || echo false)"
         printf '"routes":{"lower":%s,"upper":%s},' "$lower" "$upper"
+        printf '"tun":{"interface":"%s","backend":"%s","device":%s,"backendReady":%s,"link":%s},' \
+                "$(json_escape "$TUN_INTERFACE")" "$(json_escape "$TUN_BACKEND")" "$tun_device" "$tun_ready" "$tun_link"
         printf '"dnsServers":'
         json_dns_servers
         printf ','
-        printf '"logFile":"%s"' "$LOG_FILE"
+        printf '"logFile":"%s"' "$(json_escape "$LOG_FILE")"
         printf '}\n'
+}
+
+seconds_to_ms() {
+        awk -v seconds="$1" 'BEGIN { if (seconds == "" || seconds < 0) seconds=0; printf "%.0f", seconds * 1000 }'
+}
+
+site_json() {
+        local item=$1 name url tmp output rc code time_connect time_appconnect time_total remote_ip ok error connect_ms tls_ms total_ms
+        name=${item%%|*}
+        url=${item#*|}
+
+        if [ "$name" = "$url" ]; then
+                name=$url
+        fi
+
+        tmp=$STATE_DIR/curl-error.$$
+        mkdir -p "$STATE_DIR"
+        output=$(curl -4 -L -o /dev/null -sS --connect-timeout 3 --max-time 6 \
+                -w '%{http_code}|%{time_connect}|%{time_appconnect}|%{time_total}|%{remote_ip}' \
+                "$url" 2>"$tmp")
+        rc=$?
+        error=$(cat "$tmp" 2>/dev/null)
+        rm -f "$tmp"
+
+        IFS='|' read -r code time_connect time_appconnect time_total remote_ip <<EOF
+$output
+EOF
+
+        ok=false
+        if [ "$rc" = "0" ] && [ -n "$code" ] && [ "$code" != "000" ]; then
+                ok=true
+        fi
+
+        connect_ms=$(seconds_to_ms "$time_connect")
+        tls_ms=$(seconds_to_ms "$time_appconnect")
+        total_ms=$(seconds_to_ms "$time_total")
+
+        printf '{'
+        printf '"name":"%s",' "$(json_escape "$name")"
+        printf '"url":"%s",' "$(json_escape "$url")"
+        printf '"ok":%s,' "$ok"
+        printf '"httpCode":"%s",' "$(json_escape "$code")"
+        printf '"connectMs":%s,' "$connect_ms"
+        printf '"tlsMs":%s,' "$tls_ms"
+        printf '"totalMs":%s,' "$total_ms"
+        printf '"remoteIp":"%s",' "$(json_escape "$remote_ip")"
+        printf '"error":"%s"' "$(json_escape "$error")"
+        printf '}'
+}
+
+sites_json() {
+        load_settings
+        local first=1 site
+
+        command -v curl >/dev/null 2>&1 || die "missing curl command"
+
+        printf '['
+        printf '%s\n' "$TEST_SITES" | while IFS= read -r site; do
+                [ -n "$site" ] || continue
+                if [ "$first" = "1" ]; then
+                        first=0
+                else
+                        printf ','
+                fi
+                site_json "$site"
+        done
+        printf ']\n'
 }
 
 doctor() {
         load_settings
         validate_settings
         [ -x /etc/init.d/dnsmasq ] || die "missing /etc/init.d/dnsmasq"
+        command -v curl >/dev/null 2>&1 || die "missing curl command"
         echo "SD-WAN Verge doctor OK"
         echo "mode=$MODE"
         echo "gateway=$CPE_GATEWAY"
         echo "dns_servers=$DNS_SERVERS"
+        echo "tun_interface=$TUN_INTERFACE"
+        if tun_available; then
+                echo "tun_device=ready"
+        else
+                echo "tun_device=missing"
+        fi
+        if tun_backend_ready; then
+                echo "tun_backend=ready:$TUN_BACKEND"
+        else
+                echo "tun_backend=missing:$TUN_BACKEND"
+        fi
 }
 
 show_logs() {
@@ -271,18 +561,23 @@ show_logs() {
 }
 
 usage() {
-        cat <<'EOF'
+        cat <<EOF
 Usage: sdwan-verge-core <command>
 
+COMMANDS: $COMMANDS
+
 Commands:
-  start        Apply SD-WAN routes and optional DNS.
-  stop         Remove SD-WAN routes and restore DNS.
+  start        Apply SD-WAN mode and optional DNS.
+  stop         Remove SD-WAN mode and restore DNS.
   restart      Stop then start.
   status       Print JSON runtime status.
+  traffic      Print JSON interface traffic counters.
+  sites        Test configured overseas sites and print JSON latency.
   set-dns      Apply configured DNS only.
   restore-dns  Restore backed-up DNS only.
   logs         Print runtime logs.
   doctor       Check dependencies and config.
+  uninstall    Stop acceleration and remove this LuCI package.
 EOF
 }
 
@@ -300,6 +595,12 @@ case "${1:-}" in
         status)
                 status_json
                 ;;
+        traffic)
+                traffic_json
+                ;;
+        sites)
+                sites_json
+                ;;
         set-dns)
                 load_settings
                 validate_settings
@@ -315,6 +616,11 @@ case "${1:-}" in
                 ;;
         doctor)
                 doctor
+                ;;
+        uninstall)
+                stop_acceleration >/dev/null 2>&1 || true
+                log "uninstall requested"
+                opkg remove luci-app-sdwan-verge
                 ;;
         *)
                 usage

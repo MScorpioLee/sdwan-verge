@@ -10,8 +10,12 @@ The plugin applies the same half-route idea as the original BAT script, but on t
 
 The LuCI page exposes a mode selector:
 
-- `Half Route`: the stable default. It uses OpenWrt/iStoreOS kernel routing and is the only mode that starts in this package.
-- `TUN`: an experimental placeholder for a future router-side TUN backend. The current package refuses to start this mode instead of pretending to accelerate traffic.
+- `Half Route`: the stable default. It uses OpenWrt/iStoreOS kernel routing and keeps source IP unchanged.
+- `TUN`: calls a configured real TUN backend. The package checks `kmod-tun` through `/dev/net/tun` and checks that the backend file is executable before starting. If either dependency is missing, it refuses to start instead of pretending to accelerate traffic.
+
+The LuCI page also shows traffic counters and 常用网站检测 results for Google, YouTube, Claude, Amazon, GitHub, and OpenAI. Site tests use IPv4 `curl` connection timing because the target CPE scenario is IPv4-only.
+
+TUN 模式必须接入真实 TUN backend；这个插件只负责配置、依赖检查和生命周期管理。
 
 Installing the package does not enable acceleration by itself. The default UCI switch is disabled, so the router does not change routes or DNS until the user starts it.
 
@@ -25,7 +29,7 @@ router/openwrt/
   files/usr/libexec/sdwan-verge/sdwan-verge-core
   files/usr/share/luci/menu.d/luci-app-sdwan-verge.json
   files/usr/share/rpcd/acl.d/luci-app-sdwan-verge.json
-  files/www/luci-static/resources/view/sdwan-verge/status.js
+  files/www/luci-static/resources/view/sdwan-verge/dashboard.js
   tests/static_test.sh
 ```
 
@@ -52,13 +56,13 @@ bash scripts/package_openwrt_ipk.sh
 Output:
 
 ```text
-dist/releases/luci-app-sdwan-verge_0.1.0-1_all.ipk
+dist/releases/luci-app-sdwan-verge_0.1.0-2_all.ipk
 ```
 
 ## Install
 
 ```sh
-opkg install luci-app-sdwan-verge_0.1.0-1_all.ipk
+opkg install luci-app-sdwan-verge_0.1.0-2_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -72,10 +76,13 @@ Services > SD-WAN Verge
 
 ```sh
 /usr/libexec/sdwan-verge/sdwan-verge-core status
+/usr/libexec/sdwan-verge/sdwan-verge-core traffic
+/usr/libexec/sdwan-verge/sdwan-verge-core sites
 /usr/libexec/sdwan-verge/sdwan-verge-core doctor
 /usr/libexec/sdwan-verge/sdwan-verge-core start
 /usr/libexec/sdwan-verge/sdwan-verge-core stop
 /usr/libexec/sdwan-verge/sdwan-verge-core logs
+/usr/libexec/sdwan-verge/sdwan-verge-core uninstall
 ```
 
 Or through init:
@@ -90,9 +97,18 @@ Or through init:
 
 - The OpenWrt/iStoreOS router must be the default gateway for LAN clients if the route change should affect the whole LAN.
 - The CPE gateway must be reachable from the router. The default is `192.168.1.140`.
-- `start` replaces two half routes and optionally replaces dnsmasq DNS servers.
+- `start` replaces two half routes in Half Route mode, or calls the configured TUN backend in TUN mode, and optionally replaces dnsmasq DNS servers.
 - `stop` deletes the two half routes and restores the saved dnsmasq DNS backup when available.
 - If DNS backup is missing, `stop` clears the dnsmasq server list and restarts dnsmasq.
+- TUN mode requires a real executable backend at the configured path, for example `/usr/libexec/sdwan-verge/sdwan-verge-tun`. The backend contract is:
+
+```sh
+sdwan-verge-tun start <interface> <cpe_gateway>
+sdwan-verge-tun stop <interface> <cpe_gateway>
+```
+
+The backend owns packet forwarding. The LuCI plugin owns config, dependency checks, DNS, logs, and status.
+- The LuCI page has an uninstall button. It calls `uninstall`, which stops acceleration first and then removes `luci-app-sdwan-verge`.
 - Emergency stop:
 
 ```sh

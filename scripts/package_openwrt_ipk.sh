@@ -8,7 +8,7 @@ WORK_DIR="$ROOT_DIR/build/openwrt-ipk"
 
 PKG_NAME="luci-app-sdwan-verge"
 PKG_VERSION="0.1.0"
-PKG_RELEASE="1"
+PKG_RELEASE="2"
 PKG_ARCH="all"
 OUT_PATH="$DIST_DIR/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"
 
@@ -25,7 +25,7 @@ require_file "$PKG_DIR/files/etc/init.d/sdwan-verge"
 require_file "$PKG_DIR/files/usr/libexec/sdwan-verge/sdwan-verge-core"
 require_file "$PKG_DIR/files/usr/share/luci/menu.d/luci-app-sdwan-verge.json"
 require_file "$PKG_DIR/files/usr/share/rpcd/acl.d/luci-app-sdwan-verge.json"
-require_file "$PKG_DIR/files/www/luci-static/resources/view/sdwan-verge/status.js"
+require_file "$PKG_DIR/files/www/luci-static/resources/view/sdwan-verge/dashboard.js"
 
 command -v python3 >/dev/null 2>&1 || {
   echo "missing python3 command" >&2
@@ -46,7 +46,7 @@ Architecture: all
 Maintainer: Leslie <leslie@example.local>
 Section: luci
 Priority: optional
-Depends: luci-base, rpcd, uci, dnsmasq, ip-tiny
+Depends: luci-base, rpcd, uci, dnsmasq, ip-tiny, curl
 Description: SD-WAN Verge LuCI plugin for OpenWrt/iStoreOS half-route acceleration.
 EOF
 
@@ -56,12 +56,26 @@ EOF
 
 cat >"$WORK_DIR/control/postinst" <<'EOF'
 #!/bin/sh
+[ -n "$IPKG_INSTROOT" ] && exit 0
+uci -q get sdwan_verge.main.tun_interface >/dev/null || uci set sdwan_verge.main.tun_interface='sdwan-tun0'
+uci -q get sdwan_verge.main.tun_backend >/dev/null || uci set sdwan_verge.main.tun_backend='/usr/libexec/sdwan-verge/sdwan-verge-tun'
+if ! uci -q get sdwan_verge.main.test_site >/dev/null; then
+        uci add_list sdwan_verge.main.test_site='Google|https://www.google.com/generate_204'
+        uci add_list sdwan_verge.main.test_site='YouTube|https://www.youtube.com/generate_204'
+        uci add_list sdwan_verge.main.test_site='Claude|https://claude.ai/'
+        uci add_list sdwan_verge.main.test_site='Amazon|https://www.amazon.com/'
+        uci add_list sdwan_verge.main.test_site='GitHub|https://github.com/'
+        uci add_list sdwan_verge.main.test_site='OpenAI|https://openai.com/'
+fi
+uci commit sdwan_verge >/dev/null 2>&1 || true
+rm -f /www/luci-static/resources/view/sdwan-verge/status.js 2>/dev/null || true
 rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache /tmp/luci-*cache* 2>/dev/null || true
 exit 0
 EOF
 
 cat >"$WORK_DIR/control/postrm" <<'EOF'
 #!/bin/sh
+[ -n "$IPKG_INSTROOT" ] && exit 0
 rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache /tmp/luci-*cache* 2>/dev/null || true
 exit 0
 EOF
