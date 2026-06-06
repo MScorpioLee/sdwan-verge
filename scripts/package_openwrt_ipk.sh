@@ -56,57 +56,104 @@ EOF
 
 cat >"$WORK_DIR/control/postinst" <<'EOF'
 #!/bin/sh
-[ -n "$IPKG_INSTROOT" ] && exit 0
-/etc/init.d/rpcd restart >/dev/null 2>&1 || true
+rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache /tmp/luci-*cache* 2>/dev/null || true
 exit 0
 EOF
-chmod 755 "$WORK_DIR/control/postinst"
 
 cat >"$WORK_DIR/control/postrm" <<'EOF'
 #!/bin/sh
-[ -n "$IPKG_INSTROOT" ] && exit 0
-/etc/init.d/rpcd restart >/dev/null 2>&1 || true
+rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache /tmp/luci-*cache* 2>/dev/null || true
 exit 0
 EOF
-chmod 755 "$WORK_DIR/control/postrm"
+
+chmod 755 "$WORK_DIR/control/postinst" "$WORK_DIR/control/postrm"
 
 printf '2.0\n' >"$WORK_DIR/debian-binary"
 
-(cd "$WORK_DIR/control" && tar -czf "$WORK_DIR/control.tar.gz" .)
-(cd "$WORK_DIR/data" && tar -czf "$WORK_DIR/data.tar.gz" .)
-
-rm -f "$OUT_PATH"
-python3 - "$OUT_PATH" \
-  "$WORK_DIR/debian-binary" \
-  "$WORK_DIR/control.tar.gz" \
-  "$WORK_DIR/data.tar.gz" <<'PY'
+python3 - "$WORK_DIR/control" "$WORK_DIR/control.tar.gz" <<'PY'
+import gzip
 import os
 import sys
+import tarfile
 
-out_path = sys.argv[1]
-members = sys.argv[2:]
+source_dir, out_path = sys.argv[1], sys.argv[2]
 
-with open(out_path, "wb") as archive:
-    archive.write(b"!<arch>\n")
-    for member in members:
-        name = os.path.basename(member)
-        with open(member, "rb") as source:
-            data = source.read()
-        header = (
-            name.ljust(16)
-            + "0".ljust(12)
-            + "0".ljust(6)
-            + "0".ljust(6)
-            + format(0o100644, "o").ljust(8)
-            + str(len(data)).ljust(10)
-            + "`\n"
-        )
-        if len(header) != 60:
-            raise SystemExit(f"invalid ar header for {name}: {len(header)} bytes")
-        archive.write(header.encode("ascii"))
-        archive.write(data)
-        if len(data) % 2:
-            archive.write(b"\n")
+with gzip.GzipFile(out_path, "wb", mtime=0) as gzip_file:
+    with tarfile.open(fileobj=gzip_file, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for root, dirs, files in os.walk(source_dir):
+            dirs.sort()
+            files.sort()
+            rel_root = os.path.relpath(root, source_dir)
+            for file_name in files:
+                path = os.path.join(root, file_name)
+                rel_path = file_name if rel_root == "." else os.path.join(rel_root, file_name)
+                info = archive.gettarinfo(path, arcname="./" + rel_path)
+                info.uid = info.gid = 0
+                info.uname = info.gname = "root"
+                info.mtime = 0
+                with open(path, "rb") as handle:
+                    archive.addfile(info, handle)
+PY
+
+python3 - "$WORK_DIR/data" "$WORK_DIR/data.tar.gz" <<'PY'
+import gzip
+import os
+import stat
+import sys
+import tarfile
+
+source_dir, out_path = sys.argv[1], sys.argv[2]
+
+def add_dir(archive, rel_path):
+    info = tarfile.TarInfo("./" + rel_path + "/")
+    info.type = tarfile.DIRTYPE
+    info.mode = 0o755
+    info.uid = info.gid = 0
+    info.uname = info.gname = "root"
+    info.mtime = 0
+    archive.addfile(info)
+
+with gzip.GzipFile(out_path, "wb", mtime=0) as gzip_file:
+    with tarfile.open(fileobj=gzip_file, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for root, dirs, files in os.walk(source_dir):
+            dirs.sort()
+            files.sort()
+            rel_root = os.path.relpath(root, source_dir)
+            if rel_root != ".":
+                add_dir(archive, rel_root)
+            for file_name in files:
+                path = os.path.join(root, file_name)
+                rel_path = file_name if rel_root == "." else os.path.join(rel_root, file_name)
+                info = archive.gettarinfo(path, arcname="./" + rel_path)
+                info.uid = info.gid = 0
+                info.uname = info.gname = "root"
+                info.mtime = 0
+                mode = stat.S_IMODE(info.mode)
+                info.mode = 0o755 if mode & 0o111 else 0o644
+                with open(path, "rb") as handle:
+                    archive.addfile(info, handle)
+PY
+
+rm -f "$OUT_PATH"
+python3 - "$WORK_DIR" "$OUT_PATH" <<'PY'
+import gzip
+import sys
+import tarfile
+
+work_dir, out_path = sys.argv[1], sys.argv[2]
+outer_members = ["debian-binary", "data.tar.gz", "control.tar.gz"]
+
+with gzip.GzipFile(out_path, "wb", mtime=0) as gzip_file:
+    with tarfile.open(fileobj=gzip_file, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for name in outer_members:
+            path = f"{work_dir}/{name}"
+            info = archive.gettarinfo(path, arcname="./" + name)
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            info.mode = 0o644
+            info.mtime = 0
+            with open(path, "rb") as handle:
+                archive.addfile(info, handle)
 PY
 
 echo "packaged $OUT_PATH"

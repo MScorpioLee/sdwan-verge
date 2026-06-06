@@ -38,6 +38,13 @@ void main() {
     expect(script, contains('control.tar.gz'));
     expect(script, contains('data.tar.gz'));
     expect(script, contains('debian-binary'));
+    expect(script, contains('outer_members = ["debian-binary", "data.tar.gz", "control.tar.gz"]'));
+    expect(script, contains('tarfile.USTAR_FORMAT'));
+    expect(script, contains('postinst'));
+    expect(script, contains('postrm'));
+    expect(script, contains('/tmp/luci-indexcache*'));
+    expect(script, isNot(contains('!<arch>')));
+    expect(script, isNot(contains('/etc/init.d/rpcd restart')));
 
     expect(workflow, contains('- openwrt'));
     expect(workflow, contains('name: sdwan-verge-openwrt'));
