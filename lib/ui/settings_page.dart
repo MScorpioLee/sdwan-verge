@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../domain/sdwan_profile.dart';
 import '../services/app_config_controller.dart';
 import '../tun/tun_controller.dart';
 import 'theme.dart';
@@ -20,25 +19,14 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  late final TextEditingController _cpe;
-  late bool _syncDnsWithAcceleration;
   String? _message;
 
   @override
   void initState() {
     super.initState();
-    final profile = widget.controller.config.activeProfile;
-    _cpe = TextEditingController(text: profile.cpeIp);
-    _syncDnsWithAcceleration = profile.syncDnsWithAcceleration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       widget.tunController.refreshLaunchAtLogin();
     });
-  }
-
-  @override
-  void dispose() {
-    _cpe.dispose();
-    super.dispose();
   }
 
   @override
@@ -50,15 +38,6 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 20),
         _SystemSettingsCard(tunController: widget.tunController),
         const SizedBox(height: 20),
-        _Field(label: 'CPE 地址', controller: _cpe),
-        const SizedBox(height: 12),
-        _DnsSyncSwitch(
-          value: _syncDnsWithAcceleration,
-          onChanged: (value) => setState(() {
-            _syncDnsWithAcceleration = value;
-          }),
-        ),
-        const SizedBox(height: 12),
         _TrafficHistorySwitch(
           value: widget.controller.config.retainTrafficHistory,
           onChanged: _setRetainTrafficHistory,
@@ -69,42 +48,9 @@ class _SettingsPageState extends State<SettingsPage> {
           busy: widget.tunController.busy,
           onChanged: _setLaunchAtLogin,
         ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: [
-            FilledButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.save),
-              label: const Text('保存配置'),
-            ),
-            OutlinedButton.icon(
-              onPressed: _restoreDefaults,
-              icon: const Icon(Icons.restore),
-              label: const Text('恢复默认'),
-            ),
-          ],
-        ),
         if (_message != null) ...[const SizedBox(height: 12), Text(_message!)],
       ],
     );
-  }
-
-  Future<void> _save() async {
-    final current = widget.controller.config.activeProfile;
-    final cpeIp = _cpe.text.trim();
-    final result = await widget.controller.saveProfile(
-      current.copyWith(
-        cpeIp: cpeIp,
-        syncDnsWithAcceleration: _syncDnsWithAcceleration,
-      ),
-    );
-    if (result.success) {
-      widget.tunController.setSyncDnsWithAcceleration(_syncDnsWithAcceleration);
-      await widget.tunController.updateCpeHost(cpeIp);
-    }
-    setState(() => _message = result.message);
   }
 
   Future<void> _setRetainTrafficHistory(bool value) async {
@@ -124,77 +70,6 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _message = widget.tunController.launchAtLogin ? '已开启开机自动启动' : '已关闭开机自动启动';
     });
-  }
-
-  void _restoreDefaults() {
-    final defaults = SdwanProfile.defaults();
-    _cpe.text = defaults.cpeIp;
-    setState(() {
-      _syncDnsWithAcceleration = defaults.syncDnsWithAcceleration;
-      _message = '已恢复默认值，请点击保存配置';
-    });
-  }
-}
-
-class _DnsSyncSwitch extends StatelessWidget {
-  const _DnsSyncSwitch({required this.value, required this.onChanged});
-
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: panelDecoration(),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: AppColors.primarySoft,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(
-              Icons.dns_rounded,
-              size: 18,
-              color: AppColors.primary,
-            ),
-          ),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'DNS 跟随 CPE',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  '开启加速时临时把系统 IPv4 DNS 指向 CPE，关闭、回退或退出时恢复原设置。',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Switch(
-            key: const ValueKey('sync-dns-switch'),
-            value: value,
-            onChanged: onChanged,
-          ),
-        ],
-      ),
-    );
   }
 }
 
@@ -409,27 +284,6 @@ class _SystemSettingsCard extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-class _Field extends StatelessWidget {
-  const _Field({required this.label, required this.controller});
-
-  final String label;
-  final TextEditingController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-        ),
-      ),
     );
   }
 }

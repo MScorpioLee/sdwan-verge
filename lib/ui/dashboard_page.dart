@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../domain/acceleration_mode.dart';
+import '../domain/sdwan_profile.dart';
 import '../services/app_config_controller.dart';
 import '../tun/tun_controller.dart';
 import '../tun/tun_models.dart';
@@ -78,6 +80,19 @@ class DashboardPage extends StatelessWidget {
                     SizedBox(
                       width: cardW,
                       child: _InfoCard(
+                        icon: Icons.folder_copy_rounded,
+                        title: '当前配置',
+                        value: profile.name,
+                        valueColor: AppColors.primary,
+                        rows: [
+                          _Kv('模式', _modeText(profile.mode)),
+                          _Kv('远端', _profileEndpoint(profile)),
+                        ],
+                      ),
+                    ),
+                    SizedBox(
+                      width: cardW,
+                      child: _InfoCard(
                         icon: Icons.router_rounded,
                         title: 'CPE 网关',
                         value: cpe.reachable ? '已连接' : '未连接',
@@ -111,7 +126,7 @@ class DashboardPage extends StatelessWidget {
                             : null,
                         rows: [
                           _Kv('入口', status.adapterName),
-                          _Kv('出口', 'CPE ${profile.cpeIp}'),
+                          _Kv('出口', _profileEndpoint(profile)),
                         ],
                       ),
                     ),
@@ -131,8 +146,8 @@ class DashboardPage extends StatelessWidget {
             _NoteCard(
               text: halfRoute
                   ? 'IPv4 流量通过系统半路由交给 CPE ${profile.cpeIp}，源 IP 保持不变，由 CPE 负责分流。'
-                        '若连续检测不到 CPE，将自动删除半路由并回切本机直连；DNS 可在设置中选择跟随 CPE。'
-                  : '当前入口为 ${status.adapterName}，需要本地 helper/service 数据面转发到 CPE ${profile.cpeIp}。'
+                        '若连续检测不到 CPE，将自动删除半路由并回切本机直连；DNS 可在配置页选择跟随 CPE。'
+                  : '当前入口为 ${status.adapterName}，按当前 Profile 连接 ${_profileEndpoint(profile)}。'
                         '若连续检测不到 CPE，将自动停止并回切本机直连。',
             ),
             if (status.lastError != null && status.lastError!.isNotEmpty) ...[
@@ -159,8 +174,8 @@ class DashboardPage extends StatelessWidget {
   String _stateSubtitle(TunState state) {
     return switch (state) {
       TunState.autoRecovered => 'CPE 异常，已恢复本机直连',
-      TunState.running => '正在通过半路由交给 CPE',
-      TunState.starting => '正在配置半路由…',
+      TunState.running => '正在通过当前配置接管流量',
+      TunState.starting => '正在启动当前配置…',
       TunState.stopping => '正在恢复直连…',
       TunState.failed => '启动失败，请查看下方提示',
       TunState.stopped => '点击右侧按钮开启加速',
@@ -177,6 +192,23 @@ class DashboardPage extends StatelessWidget {
       TunPermission.needsHelperInstall => '待安装助手',
       TunPermission.denied => '授权被拒绝',
       TunPermission.unsupported => '暂未接入',
+    };
+  }
+
+  String _modeText(AccelerationMode mode) {
+    return switch (mode) {
+      AccelerationMode.openVpn => 'OpenVPN',
+      AccelerationMode.halfRoute => 'Half Route',
+      AccelerationMode.legacyTun => 'Legacy TUN',
+    };
+  }
+
+  String _profileEndpoint(SdwanProfile profile) {
+    return switch (profile.mode) {
+      AccelerationMode.openVpn =>
+        '${profile.openVpn.remoteHost}:${profile.openVpn.remotePort}/${profile.openVpn.protocol.ovpnValue}',
+      AccelerationMode.halfRoute => 'CPE ${profile.cpeIp}',
+      AccelerationMode.legacyTun => 'CPE ${profile.cpeIp}',
     };
   }
 }

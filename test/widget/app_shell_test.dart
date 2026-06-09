@@ -256,10 +256,10 @@ void main() {
     // 点侧边栏「设置」切换页面
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
-    expect(find.text('CPE 地址'), findsOneWidget);
+    expect(find.text('CPE 地址'), findsNothing);
     expect(find.text('公司名称'), findsNothing);
     expect(find.text('保留历史流量统计'), findsOneWidget);
-    expect(find.text('DNS 跟随 CPE'), findsOneWidget);
+    expect(find.text('DNS 跟随 CPE'), findsNothing);
     expect(find.text('开机自动启动'), findsOneWidget);
 
     await tester.tap(find.text('帮助'));
@@ -270,7 +270,7 @@ void main() {
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
   });
 
-  testWidgets('设置页默认开启 DNS 跟随 CPE 且可关闭保存', (tester) async {
+  testWidgets('配置页默认开启 DNS 跟随 CPE 且可关闭保存', (tester) async {
     tester.view.physicalSize = const Size(1200, 2200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -298,16 +298,17 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('设置'));
+    await tester.tap(find.text('配置'));
     await tester.pumpAndSettle();
-    expect(service.syncDnsWithAcceleration, isTrue);
-    await tester.tap(find.byKey(const ValueKey('sync-dns-switch')));
+    await tester.tap(find.text('编辑').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('profile-sync-dns-switch')));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '保存配置'));
     await tester.pumpAndSettle();
 
     expect(store.config.activeProfile.syncDnsWithAcceleration, isFalse);
-    expect(service.syncDnsWithAcceleration, isFalse);
+    expect(service.syncDnsWithAcceleration, isTrue);
   });
 
   testWidgets('连接页单连接速率缺失时摘要使用接口总速率', (tester) async {

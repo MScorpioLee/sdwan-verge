@@ -8,6 +8,7 @@ import 'dashboard_page.dart';
 import 'help_page.dart';
 import 'latency_page.dart';
 import 'logs_page.dart';
+import 'profiles_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
 
@@ -30,6 +31,7 @@ class _AppShellState extends State<AppShell> {
 
   static const _items = [
     _NavMeta('仪表盘', Icons.dashboard_rounded),
+    _NavMeta('配置', Icons.folder_copy_rounded),
     _NavMeta('连接', Icons.hub_rounded),
     _NavMeta('测速', Icons.speed_rounded),
     _NavMeta('日志', Icons.receipt_long_rounded),
@@ -44,6 +46,7 @@ class _AppShellState extends State<AppShell> {
         configController: widget.configController,
         tunController: widget.tunController,
       ),
+      ProfilesPage(controller: widget.configController),
       ConnectionsPage(tunController: widget.tunController),
       LatencyPage(tunController: widget.tunController),
       LogsPage(tunController: widget.tunController),
