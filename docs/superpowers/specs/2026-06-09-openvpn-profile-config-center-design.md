@@ -21,9 +21,11 @@
 3. 支持导出 Profile 或 `.ovpn`，默认不导出密码。
 4. 支持订阅 URL，像 Clash 订阅一样更新一组 Profile。
 5. 默认使用 OpenVPN UDP IPv4，稳定连接到 CPE OpenVPN Server，再由 CPE 负责分流和出口。
-6. 保留 Half Route 和 Legacy TUN 的入口，便于对比和回退，但默认推荐 OpenVPN。
-7. 密码、token、私钥等敏感信息不进入普通配置 JSON、不进日志、不提交到仓库。
-8. 保留现有 Clash 风格 UI、仪表盘、连接、测速、日志和设置页面风格。
+6. OpenVPN 协议必须可编辑，用户可以在 UDP IPv4 与 TCP IPv4 间切换，并同步更新运行时配置。
+7. 支持 OpenVPN 高级自定义配置，用户可以自行添加 OpenVPN 指令，导入文件中的未知指令也要保留。
+8. 保留 Half Route 和 Legacy TUN 的入口，便于对比和回退，但默认推荐 OpenVPN。
+9. 密码、token、私钥等敏感信息不进入普通配置 JSON、不进日志、不提交到仓库。
+10. 保留现有 Clash 风格 UI、仪表盘、连接、测速、日志和设置页面风格。
 
 ## 非目标
 
@@ -69,6 +71,7 @@ OpenVPN Profile 增加：
     "remoteHost": "192.168.1.140",
     "remotePort": 10189,
     "protocol": "udp4",
+    "availableProtocols": ["udp4", "tcp-client"],
     "authUserPass": true,
     "credentialRef": "keychain-or-credential-manager-id",
     "configRef": "stored-redacted-ovpn-profile-id",
@@ -76,12 +79,18 @@ OpenVPN Profile 增加：
     "tunName": "auto",
     "mtu": "auto",
     "mssfix": "auto",
-    "pullFilterIpv6": true
+    "pullFilterIpv6": true,
+    "customDirectives": [
+      "verb 3",
+      "resolv-retry infinite",
+      "nobind"
+    ],
+    "preserveImportedDirectives": true
   }
 }
 ```
 
-配置中心允许用户把当前 TCP 配置改成 UDP，但 UI 必须提示：CPE OpenVPN Server 的协议也必须同步改为 UDP，否则客户端无法连接。
+配置中心允许用户把当前 TCP 配置改成 UDP，也允许从 UDP 改回 TCP。UI 必须提示：CPE OpenVPN Server 的协议必须与客户端一致，否则客户端无法连接。
 
 推荐 OpenVPN 片段：
 
@@ -93,6 +102,39 @@ auth-user-pass
 pull-filter ignore "ifconfig-ipv6"
 pull-filter ignore "route-ipv6"
 ```
+
+### OpenVPN 协议与自定义配置
+
+协议是 Profile 的一等字段，不只是在原始 `.ovpn` 文本里替换字符串。Profile 编辑页提供：
+
+- `UDP IPv4`：保存为 `proto udp4`，默认推荐。
+- `TCP IPv4`：保存为 `proto tcp-client`，用于 CPE 服务端仍是 TCP 的场景。
+
+保存时由配置生成器统一写入 `proto` 和 `remote`，避免用户自定义配置中重复出现冲突的协议或服务器行。若导入的 `.ovpn` 中已有 `proto tcp`、`proto tcp-client`、`proto udp` 或 `proto udp4`，导入器会转成结构化协议字段。
+
+高级自定义配置允许用户自行添加 OpenVPN 指令：
+
+- 支持逐行编辑，保留注释和空行。
+- 导入 `.ovpn` 时不认识但安全的指令放入 `customDirectives`，导出时继续带回。
+- `proto`、`remote`、`auth-user-pass`、`redirect-gateway`、IPv6 pull-filter 这类由 UI 管理的核心字段不允许在自定义区重复声明；保存时给出明确提示。
+- `<ca>`、`<cert>`、`<key>` 等内联块可以随导入配置保存；若用户在自定义区新增外部文件路径，必须校验路径存在并在导出时做敏感提示。
+- `script-security`、`up`、`down`、`route-up`、`client-connect` 等可执行脚本相关指令默认禁用，除非后续单独增加“允许不安全脚本”的高级开关。
+
+运行时配置由三部分生成：
+
+```text
+结构化基础配置
+  - proto
+  - remote
+  - dev
+  - redirect-gateway
+  - auth-user-pass 临时文件
+  - IPv4-only / DNS / MTU / mssfix
+导入保留的证书块
+用户自定义安全指令
+```
+
+因此用户既可以用图形界面改 UDP/TCP，也可以像编辑 OpenVPN 配置文件一样补充高级参数。
 
 ### Half Route 配置
 
@@ -172,6 +214,7 @@ UI 中标注为实验模式，不作为默认推荐。
 - `<ca>` 可保存到本地 profile store。
 - `<cert>`、`<key>` 若出现，标记为敏感，使用权限更严格的本地文件或系统安全存储。
 - `auth-user-pass` 不写明文路径；运行时生成临时 auth 文件。
+- 未被结构化字段接管且安全的普通指令保存到 `customDirectives`，允许用户后续编辑。
 
 ### 导出
 
@@ -284,6 +327,18 @@ OpenVPN Server 位于 CPE，不在此插件内自动管理。
 
 与连接相关的 CPE、DNS、协议、端口、MTU、测速目标迁移到 Profile 编辑页。
 
+### Profile 编辑页
+
+OpenVPN Profile 编辑页包含：
+
+- 基本信息：名称、启用状态、来源。
+- 连接参数：协议、服务器、端口、IPv4-only。
+- 认证：账号、密码保存状态、重新输入按钮。
+- DNS/路由：DNS 跟随 CPE、redirect-gateway、IPv6 忽略。
+- 高级参数：MTU、mssfix、tun 名称。
+- 自定义配置：多行 OpenVPN 指令编辑器、冲突检测、危险指令提示。
+- 预览：显示最终生成的脱敏 `.ovpn`。
+
 ### 首页调整
 
 首页显示当前 Profile：
@@ -372,7 +427,9 @@ Half Route 模式检测：
 单元测试：
 
 - Profile JSON 兼容迁移。
-- `.ovpn` 解析：TCP、UDP、auth-user-pass、redirect-gateway、IPv6 pull-filter。
+- `.ovpn` 解析：TCP、UDP、auth-user-pass、redirect-gateway、IPv6 pull-filter、自定义普通指令。
+- 协议编辑：`udp4` 与 `tcp-client` 修改后生成正确 `proto`。
+- 自定义配置校验：拒绝重复核心字段，默认拒绝脚本执行相关指令。
 - 订阅合并和本地覆盖。
 - 密码字段不进入普通配置 JSON。
 - 导出默认不包含密码。
