@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/domain/app_config.dart';
+import 'package:sdwan_client/domain/sdwan_profile.dart';
 import 'package:sdwan_client/services/app_config_controller.dart';
 import 'package:sdwan_client/services/config_repository.dart';
 
@@ -40,5 +41,32 @@ void main() {
     expect(result.success, isTrue);
     expect(controller.config.retainTrafficHistory, isTrue);
     expect(store.config.retainTrafficHistory, isTrue);
+  });
+
+  test('adds switches and deletes profiles', () async {
+    final store = MemoryConfigStore();
+    final controller = AppConfigController(configStore: store);
+    await controller.initialize();
+
+    final profile = SdwanProfile.openVpnDefaults().copyWith(
+      id: 'vpn-1',
+      name: '公司 UDP',
+    );
+
+    await controller.addProfile(profile);
+    expect(
+      controller.config.profiles.map((item) => item.id),
+      contains('vpn-1'),
+    );
+
+    await controller.setActiveProfile('vpn-1');
+    expect(controller.config.activeProfileId, 'vpn-1');
+
+    await controller.deleteProfile('vpn-1');
+    expect(controller.config.activeProfileId, 'default');
+    expect(
+      controller.config.profiles.map((item) => item.id),
+      isNot(contains('vpn-1')),
+    );
   });
 }
