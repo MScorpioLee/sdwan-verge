@@ -33,4 +33,14 @@ void main() {
     expect(appDelegate, contains('stopAccelerationBeforeExit()'));
     expect(appDelegate, contains('NSApp.terminate(nil)'));
   });
+
+  test('macOS runner exposes explicit OpenVPN unsupported status', () {
+    final appDelegate = read('macos/Runner/AppDelegate.swift');
+
+    expect(appDelegate, contains('mode(from: arguments) == "openvpn"'));
+    expect(appDelegate, contains('openVpnUnsupportedStatus'));
+    expect(appDelegate, contains('"openvpnRemoteHost"'));
+    expect(appDelegate, contains('"OpenVPN"'));
+    expect(appDelegate, contains('openvpn binary not configured'));
+  });
 }

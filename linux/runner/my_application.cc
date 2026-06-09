@@ -85,6 +85,41 @@ static const gchar* cpe_host_from_call(FlMethodCall* method_call) {
   return host;
 }
 
+static const gchar* string_from_call(FlMethodCall* method_call,
+                                     const gchar* key,
+                                     const gchar* fallback) {
+  FlValue* args = fl_method_call_get_args(method_call);
+  if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_MAP) {
+    return fallback;
+  }
+  FlValue* value = fl_value_lookup_string(args, key);
+  if (value == nullptr || fl_value_get_type(value) != FL_VALUE_TYPE_STRING) {
+    return fallback;
+  }
+  const gchar* text = fl_value_get_string(value);
+  return text == nullptr || text[0] == '\0' ? fallback : text;
+}
+
+static gboolean is_openvpn_mode(const gchar* mode) {
+  if (mode == nullptr) {
+    return FALSE;
+  }
+  return g_ascii_strcasecmp(mode, "openvpn") == 0 ||
+         g_ascii_strcasecmp(mode, "openVpn") == 0 ||
+         g_ascii_strcasecmp(mode, "open_vpn") == 0 ||
+         g_ascii_strcasecmp(mode, "open-vpn") == 0;
+}
+
+static const gchar* mode_from_call(FlMethodCall* method_call) {
+  const gchar* mode = string_from_call(method_call, "mode", "halfRoute");
+  return is_openvpn_mode(mode) ? "openvpn" : mode;
+}
+
+static const gchar* openvpn_remote_host_from_call(FlMethodCall* method_call,
+                                                  const gchar* fallback) {
+  return string_from_call(method_call, "openvpnRemoteHost", fallback);
+}
+
 static gboolean safe_ipv4(const gchar* host) {
   if (host == nullptr || host[0] == '\0') {
     return FALSE;
@@ -328,6 +363,40 @@ static FlValue* status_value(MyApplication* self,
   fl_value_set_string_take(value, "udp443Packets", fl_value_new_int(0));
   fl_value_set_string_take(value, "lastError",
                            fl_value_new_string(last_error == nullptr ? "" : last_error));
+  return value;
+}
+
+static FlValue* openvpn_unavailable_health_value(const gchar* host) {
+  FlValue* value = fl_value_new_map();
+  fl_value_set_string_take(value, "host", fl_value_new_string(host));
+  fl_value_set_string_take(value, "reachable", fl_value_new_bool(FALSE));
+  fl_value_set_string_take(value, "serviceReady", fl_value_new_bool(FALSE));
+  fl_value_set_string_take(value, "error",
+                           fl_value_new_string("openvpn binary not configured"));
+  return value;
+}
+
+static FlValue* openvpn_unsupported_status_value(const gchar* host,
+                                                 const gchar* state) {
+  FlValue* value = fl_value_new_map();
+  fl_value_set_string_take(value, "state", fl_value_new_string(state));
+  fl_value_set_string_take(value, "adapterName", fl_value_new_string("OpenVPN"));
+  fl_value_set_string_take(value, "permission", fl_value_new_string("unsupported"));
+  fl_value_set_string_take(value, "cpe", openvpn_unavailable_health_value(host));
+  fl_value_set_string_take(value, "helperInstalled", fl_value_new_bool(FALSE));
+  fl_value_set_string_take(value, "txBytes", fl_value_new_int(0));
+  fl_value_set_string_take(value, "rxBytes", fl_value_new_int(0));
+  fl_value_set_string_take(value, "txRate", fl_value_new_int(0));
+  fl_value_set_string_take(value, "rxRate", fl_value_new_int(0));
+  fl_value_set_string_take(value, "txPackets", fl_value_new_int(0));
+  fl_value_set_string_take(value, "rxPackets", fl_value_new_int(0));
+  fl_value_set_string_take(value, "txDropped", fl_value_new_int(0));
+  fl_value_set_string_take(value, "rxDropped", fl_value_new_int(0));
+  fl_value_set_string_take(value, "natMisses", fl_value_new_int(0));
+  fl_value_set_string_take(value, "sendFailures", fl_value_new_int(0));
+  fl_value_set_string_take(value, "udp443Packets", fl_value_new_int(0));
+  fl_value_set_string_take(value, "lastError",
+                           fl_value_new_string("openvpn binary not configured"));
   return value;
 }
 
@@ -649,16 +718,23 @@ static void tun_method_call_cb(FlMethodChannel* channel,
   MyApplication* self = MY_APPLICATION(user_data);
   const gchar* method = fl_method_call_get_name(method_call);
   const gchar* host = cpe_host_from_call(method_call);
+  const gchar* mode = mode_from_call(method_call);
+  const gboolean openvpn_mode = g_strcmp0(mode, "openvpn") == 0;
+  const gchar* openvpn_host = openvpn_remote_host_from_call(method_call, host);
   remember_cpe_host(self, host);
   g_autoptr(FlMethodResponse) response = nullptr;
 
   if (g_strcmp0(method, "status") == 0) {
-    g_autoptr(FlValue) result = status_value(self, host);
+    g_autoptr(FlValue) result =
+        openvpn_mode ? openvpn_unsupported_status_value(openvpn_host, "stopped")
+                     : status_value(self, host);
     update_tun_state_from_status(self, result);
     update_tray_icon(self);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "healthCheck") == 0) {
-    g_autoptr(FlValue) result = health_value(host);
+    g_autoptr(FlValue) result =
+        openvpn_mode ? openvpn_unavailable_health_value(openvpn_host)
+                     : health_value(host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "logs") == 0) {
     g_autoptr(FlValue) result = logs_value(limit_from_call(method_call, 80));
@@ -674,12 +750,16 @@ static void tun_method_call_cb(FlMethodChannel* channel,
     g_autoptr(FlValue) result = stop_acceleration(self, host);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "start") == 0) {
-    g_autoptr(FlValue) result = start_acceleration(self, host);
+    g_autoptr(FlValue) result =
+        openvpn_mode ? openvpn_unsupported_status_value(openvpn_host, "failed")
+                     : start_acceleration(self, host);
     update_tun_state_from_status(self, result);
     update_tray_icon(self);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
   } else if (g_strcmp0(method, "stop") == 0) {
-    g_autoptr(FlValue) result = stop_acceleration(self, host);
+    g_autoptr(FlValue) result =
+        openvpn_mode ? openvpn_unsupported_status_value(openvpn_host, "stopped")
+                     : stop_acceleration(self, host);
     update_tun_state_from_status(self, result);
     update_tray_icon(self);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));

@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -22,23 +23,46 @@ constexpr char kDefaultCpeHost[] = "192.168.1.140";
 std::string g_last_cpe_host = kDefaultCpeHost;
 bool g_last_sync_dns = false;
 
-std::string CpeHostFromArgs(const flutter::EncodableValue* args) {
+std::string StringArg(const flutter::EncodableValue* args,
+                      const std::string& key,
+                      const std::string& fallback) {
   if (!args) {
-    return kDefaultCpeHost;
+    return fallback;
   }
   const auto* map = std::get_if<flutter::EncodableMap>(args);
   if (!map) {
-    return kDefaultCpeHost;
+    return fallback;
   }
-  const auto entry = map->find(flutter::EncodableValue("cpeHost"));
+  const auto entry = map->find(flutter::EncodableValue(key));
   if (entry == map->end()) {
-    return kDefaultCpeHost;
+    return fallback;
   }
   const auto* host = std::get_if<std::string>(&entry->second);
   if (!host || host->empty()) {
-    return kDefaultCpeHost;
+    return fallback;
   }
   return *host;
+}
+
+std::string CpeHostFromArgs(const flutter::EncodableValue* args) {
+  return StringArg(args, "cpeHost", kDefaultCpeHost);
+}
+
+std::string ModeFromArgs(const flutter::EncodableValue* args) {
+  std::string mode = StringArg(args, "mode", "halfRoute");
+  std::string normalized = mode;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  normalized.erase(
+      std::remove_if(normalized.begin(), normalized.end(),
+                     [](char c) { return c == '_' || c == '-'; }),
+      normalized.end());
+  return normalized == "openvpn" ? "openvpn" : mode;
+}
+
+std::string OpenVpnRemoteHostFromArgs(const flutter::EncodableValue* args,
+                                      const std::string& fallback_host) {
+  return StringArg(args, "openvpnRemoteHost", fallback_host);
 }
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -278,6 +302,46 @@ flutter::EncodableValue StatusFromText(const std::string& text,
   });
 }
 
+flutter::EncodableValue OpenVpnUnavailableHealth(const std::string& host) {
+  return flutter::EncodableValue(flutter::EncodableMap{
+      {flutter::EncodableValue("host"), flutter::EncodableValue(host)},
+      {flutter::EncodableValue("reachable"), flutter::EncodableValue(false)},
+      {flutter::EncodableValue("serviceReady"), flutter::EncodableValue(false)},
+      {flutter::EncodableValue("error"),
+       flutter::EncodableValue("openvpn binary not configured")},
+  });
+}
+
+flutter::EncodableValue OpenVpnUnsupportedStatus(
+    const flutter::EncodableValue* args,
+    const std::string& state) {
+  const std::string host =
+      OpenVpnRemoteHostFromArgs(args, CpeHostFromArgs(args));
+  return flutter::EncodableValue(flutter::EncodableMap{
+      {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
+      {flutter::EncodableValue("adapterName"),
+       flutter::EncodableValue("OpenVPN")},
+      {flutter::EncodableValue("permission"),
+       flutter::EncodableValue("unsupported")},
+      {flutter::EncodableValue("cpe"), OpenVpnUnavailableHealth(host)},
+      {flutter::EncodableValue("helperInstalled"),
+       flutter::EncodableValue(false)},
+      {flutter::EncodableValue("txBytes"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("rxBytes"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("txRate"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("rxRate"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("txPackets"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("rxPackets"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("txDropped"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("rxDropped"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("natMisses"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("sendFailures"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("udp443Packets"), flutter::EncodableValue(0)},
+      {flutter::EncodableValue("lastError"),
+       flutter::EncodableValue("openvpn binary not configured")},
+  });
+}
+
 flutter::EncodableValue LogsFromText(const std::string& text) {
   flutter::EncodableList logs;
   std::istringstream stream(text);
@@ -490,15 +554,25 @@ bool FlutterWindow::OnCreate() {
   tun_channel_->SetMethodCallHandler([this](const auto& call, auto result) {
     const std::string& method = call.method_name();
     const std::string host = CpeHostFromArgs(call.arguments());
+    const std::string mode = ModeFromArgs(call.arguments());
     const bool sync_dns = BoolArg(call.arguments(), "syncDns", false);
     g_last_cpe_host = host;
     g_last_sync_dns = sync_dns;
     if (method == "status") {
+      if (mode == "openvpn") {
+        result->Success(OpenVpnUnsupportedStatus(call.arguments(), "stopped"));
+        return;
+      }
       const auto status =
           StatusFromText(RunHelper(HelperArgs(L"status", host)), host);
       RefreshTrayIcon();
       result->Success(status);
     } else if (method == "healthCheck") {
+      if (mode == "openvpn") {
+        result->Success(OpenVpnUnavailableHealth(
+            OpenVpnRemoteHostFromArgs(call.arguments(), host)));
+        return;
+      }
       const auto values =
           ParseKeyValueLines(RunHelper(HelperArgs(L"health", host)));
       result->Success(HealthFromValues(values, host));
@@ -524,12 +598,20 @@ bool FlutterWindow::OnCreate() {
                                     "lastError=helper uninstall was cancelled\n";
       result->Success(StatusFromText(text, host));
     } else if (method == "start") {
+      if (mode == "openvpn") {
+        result->Success(OpenVpnUnsupportedStatus(call.arguments(), "failed"));
+        return;
+      }
       const auto status =
           StatusFromText(RunHelper(HelperArgs(L"start", host, 0, sync_dns)),
                          host);
       RefreshTrayIcon();
       result->Success(status);
     } else if (method == "stop") {
+      if (mode == "openvpn") {
+        result->Success(OpenVpnUnsupportedStatus(call.arguments(), "stopped"));
+        return;
+      }
       const auto status =
           StatusFromText(RunHelper(HelperArgs(L"stop", host)), host);
       RefreshTrayIcon();

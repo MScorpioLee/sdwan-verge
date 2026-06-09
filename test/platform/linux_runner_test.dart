@@ -60,4 +60,14 @@ void main() {
     expect(runner, contains('my_application_shutdown'));
     expect(runner, contains('tray_quit_cb'));
   });
+
+  test('Linux runner exposes explicit OpenVPN unsupported status', () {
+    final runner = read('linux/runner/my_application.cc');
+
+    expect(runner, contains('mode_from_call'));
+    expect(runner, contains('openvpn_unsupported_status_value'));
+    expect(runner, contains('"openvpnRemoteHost"'));
+    expect(runner, contains('"OpenVPN"'));
+    expect(runner, contains('openvpn binary not configured'));
+  });
 }

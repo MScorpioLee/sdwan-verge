@@ -237,6 +237,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func helperStatus(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnUnsupportedStatus(arguments: arguments)
+    }
     guard helperPath() != nil else {
       return unsupportedStatus(
         message: "macOS helper 未安装",
@@ -273,6 +276,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func helperHealth(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnUnavailableHealth(arguments: arguments)
+    }
     guard helperPath() != nil else {
       return [
         "host": cpeHost(from: arguments),
@@ -285,6 +291,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func startHelper(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnUnsupportedStatus(state: "failed", arguments: arguments)
+    }
     guard helperPath() != nil else {
       return unsupportedStatus(
         state: "failed",
@@ -325,6 +334,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func stopHelper(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnUnsupportedStatus(state: "stopped", arguments: arguments)
+    }
     guard helperPath() != nil else {
       return unsupportedStatus(
         message: "macOS helper 未安装",
@@ -620,6 +632,66 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     }
     let host = "\(rawHost)".trimmingCharacters(in: .whitespacesAndNewlines)
     return host.isEmpty ? defaultCpeHost : host
+  }
+
+  private func mode(from arguments: Any?) -> String {
+    guard
+      let args = arguments as? [String: Any],
+      let rawMode = args["mode"]
+    else {
+      return "halfRoute"
+    }
+    let normalized = "\(rawMode)"
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+      .replacingOccurrences(of: "_", with: "")
+      .replacingOccurrences(of: "-", with: "")
+    return normalized == "openvpn" ? "openvpn" : "\(rawMode)"
+  }
+
+  private func openVpnRemoteHost(from arguments: Any?) -> String {
+    guard
+      let args = arguments as? [String: Any],
+      let rawHost = args["openvpnRemoteHost"]
+    else {
+      return cpeHost(from: arguments)
+    }
+    let host = "\(rawHost)".trimmingCharacters(in: .whitespacesAndNewlines)
+    return host.isEmpty ? cpeHost(from: arguments) : host
+  }
+
+  private func openVpnUnavailableHealth(arguments: Any?) -> [String: Any] {
+    return [
+      "host": openVpnRemoteHost(from: arguments),
+      "reachable": false,
+      "serviceReady": false,
+      "error": "openvpn binary not configured",
+    ]
+  }
+
+  private func openVpnUnsupportedStatus(
+    state: String = "stopped",
+    arguments: Any?
+  ) -> [String: Any] {
+    return [
+      "state": state,
+      "adapterName": "OpenVPN",
+      "permission": "unsupported",
+      "helperInstalled": false,
+      "cpe": openVpnUnavailableHealth(arguments: arguments),
+      "txBytes": 0,
+      "rxBytes": 0,
+      "txRate": 0,
+      "rxRate": 0,
+      "txPackets": 0,
+      "rxPackets": 0,
+      "txDropped": 0,
+      "rxDropped": 0,
+      "natMisses": 0,
+      "sendFailures": 0,
+      "udp443Packets": 0,
+      "lastError": "openvpn binary not configured",
+    ]
   }
 
   private func helperArguments(_ base: [String], from arguments: Any?) -> [String] {

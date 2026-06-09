@@ -80,4 +80,14 @@ void main() {
       );
     },
   );
+
+  test('Windows runner exposes explicit OpenVPN unsupported status', () {
+    final flutterWindow = read('windows/runner/flutter_window.cpp');
+
+    expect(flutterWindow, contains('ModeFromArgs'));
+    expect(flutterWindow, contains('OpenVpnUnsupportedStatus'));
+    expect(flutterWindow, contains('"openvpnRemoteHost"'));
+    expect(flutterWindow, contains('"OpenVPN"'));
+    expect(flutterWindow, contains('openvpn binary not configured'));
+  });
 }
