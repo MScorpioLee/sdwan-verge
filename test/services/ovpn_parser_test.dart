@@ -26,6 +26,11 @@ redacted
     expect(result.profile.openVpn.remoteHost, '192.168.1.140');
     expect(result.profile.openVpn.remotePort, 10189);
     expect(result.profile.openVpn.authUserPass, isTrue);
+    expect(result.profile.openVpn.mtu, '1392');
+    expect(
+      result.profile.openVpn.customDirectives,
+      contains('cipher AES-128-CBC'),
+    );
     expect(
       result.profile.openVpn.inlineBlocks['ca'],
       contains('BEGIN CERTIFICATE'),
@@ -50,5 +55,27 @@ pull-filter ignore "route-ipv6"
     expect(result.profile.openVpn.pullFilterIpv6, isTrue);
     expect(result.profile.openVpn.customDirectives, contains('nobind'));
     expect(result.profile.openVpn.customDirectives, contains('persist-tun'));
+  });
+
+  test('parses explicit mtu and mssfix into editable fields', () {
+    const input = '''
+proto tcp
+remote 192.168.1.140 10189
+tun-mtu 1400
+mssfix 1360
+''';
+
+    final result = OvpnParser().parse(input, fallbackName: 'MTU');
+
+    expect(result.profile.openVpn.mtu, '1400');
+    expect(result.profile.openVpn.mssfix, '1360');
+    expect(
+      result.profile.openVpn.customDirectives,
+      isNot(contains('tun-mtu 1400')),
+    );
+    expect(
+      result.profile.openVpn.customDirectives,
+      isNot(contains('mssfix 1360')),
+    );
   });
 }

@@ -6,7 +6,7 @@
 
 **Architecture:** Extend the existing `SdwanProfile` configuration model into mode-specific profile data while preserving current Half Route behavior as a migrated default. Keep parsing/generation in pure Dart for testability, keep Flutter UI state in `AppConfigController`, and pass a structured active profile to the existing `sdwan_client/tun` MethodChannel so native helpers can add OpenVPN mode without breaking Half Route/TUN.
 
-**Tech Stack:** Flutter/Dart, shared_preferences, file_selector for desktop file import/export, flutter_secure_storage for credentials, existing macOS Swift/Windows C++/Linux GTK MethodChannel helpers.
+**Tech Stack:** Flutter/Dart, shared_preferences for config and local credentials, file_selector for desktop file import/export, existing macOS Swift/Windows C++/Linux GTK MethodChannel helpers.
 
 ---
 
@@ -67,7 +67,7 @@ This plan does not trigger GitHub Actions, does not package releases, and does n
 Run:
 
 ```bash
-flutter pub add file_selector flutter_secure_storage
+flutter pub add file_selector
 ```
 
 Expected: `pubspec.yaml` and `pubspec.lock` gain the two packages. If Linux desktop dependency resolution reports a native package warning, keep the Dart dependency and handle runtime support through platform checks.

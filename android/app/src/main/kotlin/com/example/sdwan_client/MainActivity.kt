@@ -3,6 +3,9 @@ package com.example.sdwan_client
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.URL
 
 class MainActivity : FlutterActivity() {
     private val tunChannelName = "sdwan_client/tun"
@@ -39,6 +42,7 @@ class MainActivity : FlutterActivity() {
                 "stop" -> result.success(unsupportedStatus(host = cpeHost(call.arguments)))
                 "launchAtLoginStatus" -> result.success(false)
                 "setLaunchAtLogin" -> result.success(false)
+                "probeLatency" -> probeLatency(call.arguments, result)
                 else -> result.notImplemented()
             }
         }
@@ -72,4 +76,50 @@ class MainActivity : FlutterActivity() {
         val map = arguments as? Map<String, Any?> ?: return defaultCpeHost
         return map["cpeHost"]?.toString()?.takeIf { it.isNotBlank() } ?: defaultCpeHost
     }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun probeLatency(arguments: Any?, result: MethodChannel.Result) {
+        val map = arguments as? Map<String, Any?> ?: emptyMap()
+        val url = map["url"]?.toString()?.trim().orEmpty()
+        val timeoutMs = (map["timeoutMs"] as? Number)?.toInt() ?: 5000
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            result.success(latencyFailure("invalid url"))
+            return
+        }
+
+        Thread {
+            val started = System.currentTimeMillis()
+            var connection: HttpURLConnection? = null
+            try {
+                connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = timeoutMs
+                connection.readTimeout = timeoutMs
+                connection.instanceFollowRedirects = true
+                connection.setRequestProperty("User-Agent", "SD-WAN Verge")
+                connection.setRequestProperty("Connection", "close")
+                val code = connection.responseCode
+                val latencyMs = (System.currentTimeMillis() - started).toInt()
+                val value = if (code in 200..499) {
+                    mapOf(
+                        "status" to "success",
+                        "latencyMs" to latencyMs,
+                    )
+                } else {
+                    latencyFailure("HTTP $code")
+                }
+                runOnUiThread { result.success(value) }
+            } catch (_: SocketTimeoutException) {
+                runOnUiThread { result.success(mapOf("status" to "timeout")) }
+            } catch (error: Exception) {
+                runOnUiThread { result.success(latencyFailure(error.message ?: error.toString())) }
+            } finally {
+                connection?.disconnect()
+            }
+        }.start()
+    }
+
+    private fun latencyFailure(error: String): Map<String, Any> = mapOf(
+        "status" to "failed",
+        "error" to error,
+    )
 }

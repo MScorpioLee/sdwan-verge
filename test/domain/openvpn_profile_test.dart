@@ -11,7 +11,9 @@ void main() {
     expect(profile.remotePort, 10189);
     expect(profile.ipv4Only, isTrue);
     expect(profile.authUserPass, isTrue);
+    expect(profile.mtu, '1392');
     expect(profile.customDirectives, contains('verb 3'));
+    expect(profile.customDirectives, contains('cipher AES-128-CBC'));
   });
 
   test('protocol parses legacy tcp and udp spellings', () {
@@ -26,6 +28,8 @@ void main() {
       protocol: OpenVpnProtocol.tcpClient,
       remoteHost: '10.0.0.2',
       remotePort: 443,
+      mtu: '1500',
+      mssfix: '1360',
       customDirectives: const ['verb 4', 'nobind'],
     );
 
@@ -34,6 +38,8 @@ void main() {
     expect(restored.protocol, OpenVpnProtocol.tcpClient);
     expect(restored.remoteHost, '10.0.0.2');
     expect(restored.remotePort, 443);
+    expect(restored.mtu, '1500');
+    expect(restored.mssfix, '1360');
     expect(restored.customDirectives, ['verb 4', 'nobind']);
   });
 

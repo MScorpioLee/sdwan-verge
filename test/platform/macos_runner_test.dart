@@ -34,13 +34,22 @@ void main() {
     expect(appDelegate, contains('NSApp.terminate(nil)'));
   });
 
-  test('macOS runner exposes explicit OpenVPN unsupported status', () {
+  test('macOS runner starts and stops a real OpenVPN process', () {
     final appDelegate = read('macos/Runner/AppDelegate.swift');
 
     expect(appDelegate, contains('mode(from: arguments) == "openvpn"'));
-    expect(appDelegate, contains('openVpnUnsupportedStatus'));
+    expect(appDelegate, contains('private func startOpenVpn(arguments:'));
+    expect(appDelegate, contains('private func stopOpenVpn(arguments:'));
+    expect(appDelegate, contains('private func openVpnConfigText('));
+    expect(appDelegate, contains('lines.append("client")'));
+    expect(appDelegate, contains('isIgnoredOpenVpnDirectiveOnDarwin'));
+    expect(appDelegate, contains('openVpnConfigQuote'));
+    expect(appDelegate, contains('openvpnInlineBlocks'));
+    expect(appDelegate, contains('findOpenVpnBinary()'));
+    expect(appDelegate, contains('--writepid'));
+    expect(appDelegate, contains('--config'));
     expect(appDelegate, contains('"openvpnRemoteHost"'));
     expect(appDelegate, contains('"OpenVPN"'));
-    expect(appDelegate, contains('openvpn binary not configured'));
+    expect(appDelegate, isNot(contains('openVpnUnsupportedStatus')));
   });
 }

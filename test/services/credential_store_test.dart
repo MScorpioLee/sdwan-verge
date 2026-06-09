@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/services/credential_store.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -42,5 +43,21 @@ void main() {
       'readOpenVpnCredential',
       'deleteOpenVpnCredential',
     ]);
+  });
+
+  test('shared preferences store persists credential by reference', () async {
+    SharedPreferences.setMockInitialValues({});
+    const store = SharedPreferencesCredentialStore();
+
+    await store.save(
+      'profile-2',
+      const OpenVpnCredential(username: 'user01', password: 'secret'),
+    );
+    final credential = await store.read('profile-2');
+    await store.delete('profile-2');
+
+    expect(credential?.username, 'user01');
+    expect(credential?.password, 'secret');
+    expect(await store.read('profile-2'), isNull);
   });
 }

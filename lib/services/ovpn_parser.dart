@@ -17,6 +17,8 @@ class OvpnParser {
     var authUserPass = false;
     var redirectGateway = 'def1';
     var tunName = 'auto';
+    var mtu = OpenVpnProfile.defaults().mtu;
+    var mssfix = OpenVpnProfile.defaults().mssfix;
     var pullFilterIpv6 = false;
     final custom = <String>[];
     final blocks = <String, String>{};
@@ -73,6 +75,14 @@ class OvpnParser {
         case 'redirect-gateway':
           final value = parts.skip(1).join(' ').trim();
           redirectGateway = value.isEmpty ? 'def1' : value;
+        case 'tun-mtu':
+          if (parts.length > 1) {
+            mtu = parts[1];
+          }
+        case 'mssfix':
+          if (parts.length > 1) {
+            mssfix = parts[1];
+          }
         case 'auth-user-pass':
           authUserPass = true;
         case 'pull-filter':
@@ -94,8 +104,10 @@ class OvpnParser {
       authUserPass: authUserPass,
       redirectGateway: redirectGateway,
       tunName: tunName,
+      mtu: mtu,
+      mssfix: mssfix,
       pullFilterIpv6: pullFilterIpv6,
-      customDirectives: custom,
+      customDirectives: _mergeDefaultDirectives(custom),
       inlineBlocks: blocks,
     );
     final profile = SdwanProfile.openVpnDefaults().copyWith(
@@ -106,5 +118,22 @@ class OvpnParser {
       openVpn: openVpn,
     );
     return OvpnImportResult(profile: profile);
+  }
+
+  List<String> _mergeDefaultDirectives(List<String> imported) {
+    final keys = imported.map(_directiveKey).whereType<String>().toSet();
+    return [
+      for (final directive in OpenVpnProfile.defaults().customDirectives)
+        if (!keys.contains(_directiveKey(directive))) directive,
+      ...imported,
+    ];
+  }
+
+  String? _directiveKey(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty || trimmed.startsWith('#') || trimmed.startsWith(';')) {
+      return null;
+    }
+    return trimmed.split(RegExp(r'\s+')).first.toLowerCase();
   }
 }

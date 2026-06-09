@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/domain/acceleration_mode.dart';
 import 'package:sdwan_client/domain/app_config.dart';
 import 'package:sdwan_client/domain/sdwan_profile.dart';
+import 'package:sdwan_client/tun/tun_models.dart';
 
 void main() {
   test('default config uses BAT defaults and one active profile', () {
@@ -16,6 +17,11 @@ void main() {
     expect(active.secondaryDns, '114.114.114.114');
     expect(active.syncDnsWithAcceleration, isTrue);
     expect(config.retainTrafficHistory, isFalse);
+    expect(config.latencyTargets, contains(LatencyTarget.defaults.first));
+    expect(
+      config.latencyTargets.map((target) => target.id),
+      containsAll(['claude', 'amazon']),
+    );
   });
 
   test('legacy profile without DNS sync field defaults to CPE DNS sync', () {
@@ -65,6 +71,13 @@ void main() {
         ),
       ],
       retainTrafficHistory: true,
+      latencyTargets: const [
+        LatencyTarget(
+          id: 'custom-docs',
+          name: 'Docs',
+          url: 'https://docs.example.com/health',
+        ),
+      ],
     );
 
     final restored = AppConfig.fromJson(config.toJson());
@@ -72,5 +85,23 @@ void main() {
     expect(restored.activeProfile.cpeIp, '10.0.0.1');
     expect(restored.activeProfile.syncDnsWithAcceleration, isTrue);
     expect(restored.retainTrafficHistory, isTrue);
+    expect(restored.latencyTargets, hasLength(1));
+    expect(restored.latencyTargets.single.name, 'Docs');
+    expect(
+      restored.latencyTargets.single.url,
+      'https://docs.example.com/health',
+    );
+  });
+
+  test('invalid stored latency targets fall back to defaults', () {
+    final restored = AppConfig.fromJson({
+      'activeProfileId': 'default',
+      'profiles': [SdwanProfile.defaults().toJson()],
+      'latencyTargets': [
+        {'id': '', 'name': '', 'url': 'ftp://bad'},
+      ],
+    });
+
+    expect(restored.latencyTargets, LatencyTarget.defaults);
   });
 }

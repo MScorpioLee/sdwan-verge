@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'services/app_config_controller.dart';
 import 'services/config_repository.dart';
+import 'services/credential_store.dart';
 import 'services/traffic_history_repository.dart';
 import 'tun/tun_controller.dart';
 import 'tun/tun_service.dart';
@@ -12,7 +13,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final configController = AppConfigController(configStore: ConfigRepository());
   await configController.initialize();
+  const credentialStore = SharedPreferencesCredentialStore();
   final tunService = MethodChannelTunService(
+    credentialStore: credentialStore,
     defaultCpeHost: configController.config.activeProfile.cpeIp,
   );
   tunService.updateProfile(configController.config.activeProfile);
@@ -23,11 +26,13 @@ Future<void> main() async {
     service: tunService,
     trafficHistoryStore: TrafficHistoryRepository(),
     retainTrafficHistory: configController.config.retainTrafficHistory,
+    latencyTargets: configController.config.latencyTargets,
   );
   runApp(
     SdwanClientApp(
       configController: configController,
       tunController: tunController,
+      credentialStore: credentialStore,
     ),
   );
   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -40,10 +45,12 @@ class SdwanClientApp extends StatelessWidget {
     super.key,
     required this.configController,
     required this.tunController,
+    required this.credentialStore,
   });
 
   final AppConfigController configController;
   final TunController tunController;
+  final CredentialStore credentialStore;
 
   @override
   Widget build(BuildContext context) {
@@ -62,6 +69,7 @@ class SdwanClientApp extends StatelessWidget {
       home: AppShell(
         configController: configController,
         tunController: tunController,
+        credentialStore: credentialStore,
       ),
     );
   }

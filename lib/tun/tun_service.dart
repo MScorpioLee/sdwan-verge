@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 
 import '../domain/openvpn_profile.dart';
 import '../domain/sdwan_profile.dart';
+import '../services/credential_store.dart';
 export 'latency_probe.dart';
 
 import 'latency_probe.dart';
@@ -30,9 +31,11 @@ abstract interface class TunService {
 class MethodChannelTunService implements TunService {
   MethodChannelTunService({
     MethodChannel? channel,
+    CredentialStore? credentialStore,
     LatencyProbeClient? latencyProbeClient,
     String defaultCpeHost = '192.168.1.140',
   }) : _channel = channel ?? const MethodChannel('sdwan_client/tun'),
+       _credentialStore = credentialStore,
        _latencyProbeClient =
            latencyProbeClient ?? const DefaultLatencyProbeClient(),
        _cpeHost = defaultCpeHost,
@@ -44,6 +47,7 @@ class MethodChannelTunService implements TunService {
        );
 
   final MethodChannel _channel;
+  final CredentialStore? _credentialStore;
   final LatencyProbeClient _latencyProbeClient;
   String _cpeHost;
   bool _syncDns = false;
@@ -197,7 +201,7 @@ class MethodChannelTunService implements TunService {
     try {
       final result = await _channel.invokeMethod<Object?>(
         'start',
-        _baseArguments(),
+        await _startArguments(),
       );
       return _statusFromMap(result);
     } on MissingPluginException {
@@ -479,6 +483,21 @@ class MethodChannelTunService implements TunService {
     return value;
   }
 
+  Future<Map<String, Object?>> _startArguments() async {
+    final args = _baseArguments();
+    final credentialRef = _activeProfile.openVpn.credentialRef;
+    if (_activeProfile.openVpn.authUserPass &&
+        credentialRef != null &&
+        credentialRef.isNotEmpty) {
+      final credential = await _credentialStore?.read(credentialRef);
+      if (credential != null) {
+        args['openvpnUsername'] = credential.username;
+        args['openvpnPassword'] = credential.password;
+      }
+    }
+    return args;
+  }
+
   Map<String, Object?> _baseArguments() {
     final profile = _activeProfile;
     final openVpn = profile.openVpn;
@@ -493,8 +512,14 @@ class MethodChannelTunService implements TunService {
       'openvpnProtocol': openVpn.protocol.ovpnValue,
       'openvpnAuthUserPass': openVpn.authUserPass,
       'openvpnCredentialRef': openVpn.credentialRef,
+      'openvpnRedirectGateway': openVpn.redirectGateway,
+      'openvpnTunName': openVpn.tunName,
+      'openvpnMtu': openVpn.mtu,
+      'openvpnMssfix': openVpn.mssfix,
       'openvpnIpv4Only': openVpn.ipv4Only,
+      'openvpnPullFilterIpv6': openVpn.pullFilterIpv6,
       'openvpnCustomDirectives': openVpn.customDirectives,
+      'openvpnInlineBlocks': openVpn.inlineBlocks,
     };
   }
 }

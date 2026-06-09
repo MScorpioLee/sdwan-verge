@@ -43,11 +43,16 @@ class OpenVpnProfile {
     configRef: null,
     redirectGateway: 'def1',
     tunName: 'auto',
-    mtu: 'auto',
+    mtu: '1392',
     mssfix: 'auto',
     ipv4Only: true,
     pullFilterIpv6: true,
-    customDirectives: ['verb 3', 'resolv-retry infinite', 'nobind'],
+    customDirectives: [
+      'cipher AES-128-CBC',
+      'verb 3',
+      'resolv-retry infinite',
+      'nobind',
+    ],
     inlineBlocks: {},
   );
 

@@ -43,7 +43,11 @@ void main() {
       openVpn: OpenVpnProfile.defaults().copyWith(
         remoteHost: '',
         remotePort: 70000,
-        customDirectives: const ['proto tcp', 'script-security 2'],
+        customDirectives: const [
+          'proto tcp',
+          'script-security invalid',
+          'up run.sh',
+        ],
       ),
     );
 
@@ -53,5 +57,41 @@ void main() {
     expect(errors, contains('OpenVPN 端口必须在 1-65535 之间'));
     expect(errors, contains('OpenVPN 自定义配置不允许重复或危险指令：proto'));
     expect(errors, contains('OpenVPN 自定义配置不允许重复或危险指令：script-security'));
+    expect(errors, contains('OpenVPN 自定义配置不允许重复或危险指令：up'));
+  });
+
+  test('allows script-security levels when script hooks remain blocked', () {
+    final errors = validateOpenVpnDirectives(const [
+      'script-security 0',
+      'script-security 1',
+      'script-security 2',
+      'script-security 3',
+    ]);
+
+    expect(errors, isEmpty);
+  });
+
+  test('requires OpenVPN trust material before starting', () {
+    final missingCa = SdwanProfile.openVpnDefaults().copyWith(
+      mode: AccelerationMode.openVpn,
+      openVpn: OpenVpnProfile.defaults().copyWith(inlineBlocks: const {}),
+    );
+    final inlineCa = missingCa.copyWith(
+      openVpn: missingCa.openVpn.copyWith(
+        inlineBlocks: const {'ca': '-----BEGIN CERTIFICATE-----'},
+      ),
+    );
+    final caPath = missingCa.copyWith(
+      openVpn: missingCa.openVpn.copyWith(
+        customDirectives: const ['ca ca.crt'],
+      ),
+    );
+
+    expect(
+      validateProfile(missingCa),
+      contains('OpenVPN 配置缺少服务端 CA，请重新导入完整 .ovpn 或添加 ca/capath；不需要客户端证书'),
+    );
+    expect(validateProfile(inlineCa), isEmpty);
+    expect(validateProfile(caPath), isEmpty);
   });
 }

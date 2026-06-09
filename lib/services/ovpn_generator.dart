@@ -9,6 +9,7 @@ class OvpnGenerator {
 
     final openVpn = profile.openVpn;
     final lines = <String>[
+      'client',
       'dev ${openVpn.tunName == 'auto' ? 'tun' : openVpn.tunName}',
       'proto ${openVpn.protocol.ovpnValue}',
       'remote ${openVpn.remoteHost} ${openVpn.remotePort}',
@@ -22,7 +23,7 @@ class OvpnGenerator {
       if (openVpn.pullFilterIpv6) 'pull-filter ignore "route-ipv6"',
       if (openVpn.mtu != 'auto') 'tun-mtu ${openVpn.mtu}',
       if (openVpn.mssfix != 'auto') 'mssfix ${openVpn.mssfix}',
-      ...openVpn.customDirectives,
+      ...openVpn.customDirectives.where((line) => !_isGeneratedDirective(line)),
     ];
     for (final entry in openVpn.inlineBlocks.entries) {
       lines.add('<${entry.key}>');
@@ -30,5 +31,14 @@ class OvpnGenerator {
       lines.add('</${entry.key}>');
     }
     return '${lines.join('\n')}\n';
+  }
+
+  bool _isGeneratedDirective(String raw) {
+    final line = raw.trim();
+    if (line.isEmpty || line.startsWith('#') || line.startsWith(';')) {
+      return false;
+    }
+    final key = line.split(RegExp(r'\s+')).first.toLowerCase();
+    return key == 'client';
   }
 }

@@ -189,9 +189,18 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    final configController = AppConfigController(
-      configStore: MemoryConfigStore(),
-    );
+    final configStore = MemoryConfigStore()
+      ..config = AppConfig.defaults().copyWith(
+        latencyTargets: [
+          ...LatencyTarget.defaults,
+          const LatencyTarget(
+            id: 'custom-codex',
+            name: 'Codex',
+            url: 'https://chatgpt.com/',
+          ),
+        ],
+      );
+    final configController = AppConfigController(configStore: configStore);
     final tunController = TunController(service: FakeTunService());
     await configController.initialize();
     await tunController.initialize();
@@ -223,6 +232,11 @@ void main() {
     expect(find.text('事件日志'), findsOneWidget);
     expect(find.text('连接统计'), findsNothing);
     expect(find.text('开启半路由'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('自动回退')).dy -
+          tester.getTopLeft(find.text('开启半路由')).dy,
+      lessThan(58),
+    );
 
     // 连接统计独立成页，不混在事件日志里。
     await tester.tap(find.text('连接'));
@@ -243,7 +257,9 @@ void main() {
     await tester.tap(find.text('测速'));
     await tester.pumpAndSettle();
     expect(find.text('网站测速'), findsOneWidget);
+    expect(find.text('添加网站'), findsOneWidget);
     expect(find.text('Cloudflare'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
     expect(find.text('全部测速'), findsOneWidget);
     await tester.tap(find.text('全部测速'));
     await tester.pumpAndSettle();
@@ -316,6 +332,51 @@ void main() {
 
     expect(store.config.activeProfile.syncDnsWithAcceleration, isFalse);
     expect(service.syncDnsWithAcceleration, isTrue);
+  });
+
+  testWidgets('测速页可以添加自定义网站', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final configController = AppConfigController(
+      configStore: MemoryConfigStore(),
+    );
+    final tunController = TunController(service: FakeTunService());
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('测速'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('添加网站'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, '名称'), 'Codex');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'URL'),
+      'https://chatgpt.com/',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      configController.config.latencyTargets.map((item) => item.name),
+      contains('Codex'),
+    );
+    expect(
+      tunController.latencyTargets.map((item) => item.name),
+      contains('Codex'),
+    );
+    expect(find.text('Codex'), findsOneWidget);
   });
 
   testWidgets('连接页单连接速率缺失时摘要使用接口总速率', (tester) async {
@@ -495,5 +556,36 @@ void main() {
 
     expect(find.text('已授权'), findsOneWidget);
     expect(find.byTooltip('卸载助手'), findsOneWidget);
+  });
+
+  testWidgets('首页 OpenVPN 缺少组件时显示待安装组件', (tester) async {
+    final configController = AppConfigController(
+      configStore: MemoryConfigStore(),
+    );
+    final tunController = TunController(
+      service: FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          adapterName: 'OpenVPN',
+          permission: TunPermission.needsHelperInstall,
+          helperInstalled: false,
+          cpe: const CpeHealth(host: '192.168.1.140', reachable: true),
+        ),
+      ),
+    );
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('待安装 OpenVPN'), findsOneWidget);
+    expect(find.byTooltip('卸载助手'), findsNothing);
   });
 }

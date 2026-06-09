@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../domain/acceleration_mode.dart';
 import '../domain/sdwan_profile.dart';
 import '../services/app_config_controller.dart';
+import '../services/credential_store.dart';
 import '../services/profile_import_export_service.dart';
 import 'profile_editor_page.dart';
 import 'theme.dart';
@@ -14,11 +15,14 @@ class ProfilesPage extends StatelessWidget {
   ProfilesPage({
     super.key,
     required this.controller,
+    CredentialStore? credentialStore,
     ProfileImportExportService? importExportService,
-  }) : importExportService =
+  }) : credentialStore = credentialStore ?? MethodChannelCredentialStore(),
+       importExportService =
            importExportService ?? ProfileImportExportService();
 
   final AppConfigController controller;
+  final CredentialStore credentialStore;
   final ProfileImportExportService importExportService;
 
   static const _ovpnTypeGroup = XTypeGroup(
@@ -75,6 +79,7 @@ class ProfilesPage extends StatelessWidget {
                       builder: (_) => ProfileEditorPage(
                         controller: controller,
                         profile: profile,
+                        credentialStore: credentialStore,
                       ),
                     ),
                   );

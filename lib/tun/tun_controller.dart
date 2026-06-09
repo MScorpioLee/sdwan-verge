@@ -15,6 +15,7 @@ class TunController extends ChangeNotifier {
     TrafficHistoryStore? trafficHistoryStore,
     DomainResolver? domainResolver,
     LatencyProbeClient? latencyProbeClient,
+    List<LatencyTarget>? latencyTargets,
     bool retainTrafficHistory = false,
     this.failureThreshold = 3,
     this.pollInterval = const Duration(seconds: 5),
@@ -24,7 +25,12 @@ class TunController extends ChangeNotifier {
        _latencyProbeClient =
            latencyProbeClient ?? _TunServiceLatencyProbeClient(service),
        _trafficHistoryStore = trafficHistoryStore,
-       _retainTrafficHistory = retainTrafficHistory;
+       _retainTrafficHistory = retainTrafficHistory,
+       _latencyTargets = List.of(latencyTargets ?? LatencyTarget.defaults),
+       _latencyResults = [
+         for (final target in latencyTargets ?? LatencyTarget.defaults)
+           LatencyProbeResult.idle(target: target),
+       ];
 
   final TunService _service;
   final DomainResolver _domainResolver;
@@ -51,11 +57,8 @@ class TunController extends ChangeNotifier {
   final Map<String, _ConnectionBaseline> _connectionBaselines = {};
   final Map<String, String> _domainCache = {};
   final Set<String> _domainLookupsInFlight = {};
-  final List<LatencyTarget> _latencyTargets = LatencyTarget.defaults;
-  List<LatencyProbeResult> _latencyResults = [
-    for (final target in LatencyTarget.defaults)
-      LatencyProbeResult.idle(target: target),
-  ];
+  List<LatencyTarget> _latencyTargets;
+  List<LatencyProbeResult> _latencyResults;
   var _latencyTesting = false;
 
   TunStatus get status => _status;
@@ -72,6 +75,22 @@ class TunController extends ChangeNotifier {
 
   void setActiveProfile(SdwanProfile profile) {
     _service.updateProfile(profile);
+  }
+
+  void setLatencyTargets(List<LatencyTarget> targets) {
+    final nextTargets = targets.isEmpty ? LatencyTarget.defaults : targets;
+    if (_sameLatencyTargets(_latencyTargets, nextTargets)) {
+      return;
+    }
+    final resultsById = {
+      for (final result in _latencyResults) result.target.id: result,
+    };
+    _latencyTargets = List.of(nextTargets);
+    _latencyResults = [
+      for (final target in _latencyTargets)
+        resultsById[target.id] ?? LatencyProbeResult.idle(target: target),
+    ];
+    notifyListeners();
   }
 
   Future<void> initialize() async {
@@ -160,9 +179,12 @@ class TunController extends ChangeNotifier {
       if (!_status.helperInstalled) {
         _status = await _service.installHelper();
         if (!_status.helperInstalled) {
+          final openVpn = _status.adapterName.toLowerCase().contains('openvpn');
           _status = _status.copyWith(
             state: TunState.failed,
-            lastError: _status.lastError ?? '半路由服务未安装，无法开启加速',
+            lastError:
+                _status.lastError ??
+                (openVpn ? 'OpenVPN 组件未安装，无法开启加速' : '半路由服务未安装，无法开启加速'),
           );
           _stopPolling();
           return;
@@ -312,7 +334,6 @@ class TunController extends ChangeNotifier {
       _consecutiveFailures = 0;
       _status = _withDisplayTraffic(await _service.status());
       _recordTrafficSample(_status.traffic);
-      await refreshConnections();
       notifyListeners();
       return;
     }
@@ -613,4 +634,16 @@ bool _looksLikeIpAddress(String host) {
     });
   }
   return host.contains(':') && RegExp(r'^[0-9a-fA-F:]+$').hasMatch(host);
+}
+
+bool _sameLatencyTargets(List<LatencyTarget> a, List<LatencyTarget> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }

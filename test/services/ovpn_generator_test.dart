@@ -11,16 +11,18 @@ void main() {
         remoteHost: '192.168.1.140',
         remotePort: 10189,
         protocol: OpenVpnProtocol.udp4,
-        customDirectives: const ['verb 3', 'nobind'],
       ),
     );
 
     final text = OvpnGenerator().generate(profile);
 
+    expect(text, contains('client\n'));
     expect(text, contains('proto udp4'));
     expect(text, contains('remote 192.168.1.140 10189'));
     expect(text, contains('auth-user-pass'));
     expect(text, contains('pull-filter ignore "route-ipv6"'));
+    expect(text, contains('tun-mtu 1392'));
+    expect(text, contains('cipher AES-128-CBC'));
     expect(text, contains('verb 3'));
     expect(text, isNot(contains('password')));
   });

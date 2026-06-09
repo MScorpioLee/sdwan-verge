@@ -96,6 +96,14 @@ return view.extend({
                 dns.datatype = 'ip4addr';
                 dns.placeholder = '223.5.5.5';
 
+                var latencyTargets = section.option(
+                        form.DynamicList,
+                        'latency_target',
+                        _('Latency test targets')
+                );
+                latencyTargets.placeholder = 'Cloudflare|http://cp.cloudflare.com/generate_204';
+                latencyTargets.description = _('Use Name|URL format. URL must start with http:// or https://.');
+
                 var start = section.option(form.Button, '_start', _('Start'));
                 start.inputstyle = 'apply';
                 start.onclick = function() {
@@ -124,6 +132,12 @@ return view.extend({
                 logs.inputstyle = 'action';
                 logs.onclick = function() {
                         return runCore('logs');
+                };
+
+                var testSites = section.option(form.Button, '_test_sites', _('Test sites'));
+                testSites.inputstyle = 'find';
+                testSites.onclick = function() {
+                        return runCore('test-sites');
                 };
 
                 return map.render();

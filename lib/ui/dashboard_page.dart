@@ -29,6 +29,9 @@ class DashboardPage extends StatelessWidget {
         final halfRoute =
             status.adapterName.toLowerCase().contains('half route') ||
             status.adapterName.contains('半路由');
+        final openVpn =
+            profile.mode == AccelerationMode.openVpn ||
+            status.adapterName.toLowerCase().contains('openvpn');
         final canStart =
             !tunController.busy &&
             status.permission != TunPermission.unsupported &&
@@ -113,11 +116,11 @@ class DashboardPage extends StatelessWidget {
                       child: _InfoCard(
                         icon: Icons.verified_user_rounded,
                         title: '运行信息',
-                        value: _permissionText(status),
+                        value: _permissionText(status, openVpn: openVpn),
                         valueColor: status.helperInstalled
                             ? AppColors.primary
                             : AppColors.warning,
-                        trailing: status.helperInstalled
+                        trailing: status.helperInstalled && !openVpn
                             ? IconButton(
                                 onPressed: tunController.busy
                                     ? null
@@ -185,14 +188,14 @@ class DashboardPage extends StatelessWidget {
     };
   }
 
-  String _permissionText(TunStatus status) {
+  String _permissionText(TunStatus status, {required bool openVpn}) {
     if (!status.helperInstalled) {
-      return '待安装助手';
+      return openVpn ? '待安装 OpenVPN' : '待安装助手';
     }
     return switch (status.permission) {
-      TunPermission.ready => '已授权',
+      TunPermission.ready => openVpn ? 'OpenVPN 就绪' : '已授权',
       TunPermission.needsVpnConsent => '等待授权',
-      TunPermission.needsHelperInstall => '待安装助手',
+      TunPermission.needsHelperInstall => openVpn ? '待安装 OpenVPN' : '待安装助手',
       TunPermission.denied => '授权被拒绝',
       TunPermission.unsupported => '暂未接入',
     };

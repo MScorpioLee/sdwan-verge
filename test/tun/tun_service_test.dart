@@ -1,6 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sdwan_client/domain/openvpn_profile.dart';
 import 'package:sdwan_client/domain/sdwan_profile.dart';
+import 'package:sdwan_client/services/credential_store.dart';
 import 'package:sdwan_client/tun/tun_models.dart';
 import 'package:sdwan_client/tun/tun_service.dart';
 
@@ -142,6 +144,59 @@ void main() {
     expect(args['openvpnProtocol'], 'udp4');
     expect(args['openvpnRemoteHost'], '192.168.1.140');
     expect(args['openvpnRemotePort'], 10189);
+  });
+
+  test('start sends openvpn credential only for the start call', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return {
+            'state': 'running',
+            'mode': 'openvpn',
+            'adapterName': 'OpenVPN',
+            'permission': 'ready',
+            'helperInstalled': true,
+            'cpe': {
+              'host': 'vpn.example.com',
+              'reachable': true,
+              'serviceReady': true,
+            },
+          };
+        });
+
+    final service = MethodChannelTunService(
+      channel: channel,
+      credentialStore: _FakeCredentialStore(
+        const OpenVpnCredential(username: 'alice', password: 'secret'),
+      ),
+    );
+    service.updateProfile(
+      SdwanProfile.openVpnDefaults().copyWith(
+        openVpn: OpenVpnProfile.defaults().copyWith(
+          remoteHost: 'vpn.example.com',
+          credentialRef: 'profile-1',
+        ),
+      ),
+    );
+
+    await service.status();
+    await service.start();
+
+    final statusArgs =
+        calls.singleWhere((call) => call.method == 'status').arguments as Map;
+    expect(statusArgs.containsKey('openvpnUsername'), isFalse);
+    expect(statusArgs.containsKey('openvpnPassword'), isFalse);
+    final startArgs =
+        calls.singleWhere((call) => call.method == 'start').arguments as Map;
+    expect(startArgs['openvpnUsername'], 'alice');
+    expect(startArgs['openvpnPassword'], 'secret');
+    expect(startArgs['openvpnRedirectGateway'], 'def1');
+    expect(startArgs['openvpnTunName'], 'auto');
+    expect(startArgs['openvpnMtu'], '1392');
+    expect(startArgs['openvpnMssfix'], 'auto');
+    expect(startArgs['openvpnPullFilterIpv6'], isTrue);
+    expect(startArgs['openvpnInlineBlocks'], isA<Map>());
   });
 
   test('treats stale auto recovery as stopped when CPE is healthy', () async {
@@ -369,4 +424,19 @@ void main() {
       expect(status.lastError, contains('TUN'));
     },
   );
+}
+
+class _FakeCredentialStore implements CredentialStore {
+  const _FakeCredentialStore(this.credential);
+
+  final OpenVpnCredential? credential;
+
+  @override
+  Future<void> delete(String ref) async {}
+
+  @override
+  Future<OpenVpnCredential?> read(String ref) async => credential;
+
+  @override
+  Future<void> save(String ref, OpenVpnCredential credential) async {}
 }
