@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/domain/app_config.dart';
+import 'package:sdwan_client/domain/sdwan_profile.dart';
 import 'package:sdwan_client/services/app_config_controller.dart';
 import 'package:sdwan_client/services/config_repository.dart';
 import 'package:sdwan_client/tun/domain_resolver.dart';
@@ -82,6 +83,12 @@ class FakeTunService implements TunService {
         dnsRedirect: true,
       ),
     ];
+  }
+
+  @override
+  void updateProfile(SdwanProfile profile) {
+    cpeHost = profile.cpeIp;
+    syncDnsWithAcceleration = profile.syncDnsWithAcceleration;
   }
 
   @override

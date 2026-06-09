@@ -65,7 +65,10 @@ class DashboardPage extends StatelessWidget {
               stateText: _stateText(status.state),
               subtitle: _stateSubtitle(status.state),
               canStart: canStart,
-              onStart: tunController.start,
+              onStart: () {
+                tunController.setActiveProfile(profile);
+                tunController.start();
+              },
               onStop: tunController.stop,
             ),
             const SizedBox(height: 16),

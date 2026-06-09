@@ -1,11 +1,14 @@
 import 'package:flutter/services.dart';
 
+import '../domain/openvpn_profile.dart';
+import '../domain/sdwan_profile.dart';
 export 'latency_probe.dart';
 
 import 'latency_probe.dart';
 import 'tun_models.dart';
 
 abstract interface class TunService {
+  void updateProfile(SdwanProfile profile);
   void updateCpeHost(String host);
   void updateDnsSync(bool enabled);
   Future<TunStatus> status();
@@ -32,26 +35,45 @@ class MethodChannelTunService implements TunService {
   }) : _channel = channel ?? const MethodChannel('sdwan_client/tun'),
        _latencyProbeClient =
            latencyProbeClient ?? const DefaultLatencyProbeClient(),
-       _cpeHost = defaultCpeHost;
+       _cpeHost = defaultCpeHost,
+       _activeProfile = SdwanProfile.defaults().copyWith(
+         cpeIp: defaultCpeHost,
+         openVpn: OpenVpnProfile.defaults().copyWith(
+           remoteHost: defaultCpeHost,
+         ),
+       );
 
   final MethodChannel _channel;
   final LatencyProbeClient _latencyProbeClient;
   String _cpeHost;
   bool _syncDns = false;
+  SdwanProfile _activeProfile;
 
   String get defaultCpeHost => _cpeHost;
+
+  @override
+  void updateProfile(SdwanProfile profile) {
+    _activeProfile = profile;
+    _cpeHost = profile.cpeIp;
+    _syncDns = profile.syncDnsWithAcceleration;
+  }
 
   @override
   void updateCpeHost(String host) {
     final trimmed = host.trim();
     if (trimmed.isNotEmpty) {
       _cpeHost = trimmed;
+      _activeProfile = _activeProfile.copyWith(
+        cpeIp: trimmed,
+        openVpn: _activeProfile.openVpn.copyWith(remoteHost: trimmed),
+      );
     }
   }
 
   @override
   void updateDnsSync(bool enabled) {
     _syncDns = enabled;
+    _activeProfile = _activeProfile.copyWith(syncDnsWithAcceleration: enabled);
   }
 
   @override
@@ -457,10 +479,24 @@ class MethodChannelTunService implements TunService {
     return value;
   }
 
-  Map<String, Object?> _baseArguments() => {
-    'cpeHost': _cpeHost,
-    'syncDns': _syncDns,
-  };
+  Map<String, Object?> _baseArguments() {
+    final profile = _activeProfile;
+    final openVpn = profile.openVpn;
+    return {
+      'profileId': profile.id,
+      'profileName': profile.name,
+      'mode': profile.mode.json,
+      'cpeHost': _cpeHost,
+      'syncDns': _syncDns,
+      'openvpnRemoteHost': openVpn.remoteHost,
+      'openvpnRemotePort': openVpn.remotePort,
+      'openvpnProtocol': openVpn.protocol.ovpnValue,
+      'openvpnAuthUserPass': openVpn.authUserPass,
+      'openvpnCredentialRef': openVpn.credentialRef,
+      'openvpnIpv4Only': openVpn.ipv4Only,
+      'openvpnCustomDirectives': openVpn.customDirectives,
+    };
+  }
 }
 
 bool _isIpv4Endpoint(String endpoint) {

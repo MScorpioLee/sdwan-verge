@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import '../domain/sdwan_profile.dart';
 import 'domain_resolver.dart';
 import 'traffic_history_store.dart';
 import 'tun_models.dart';
@@ -68,6 +69,10 @@ class TunController extends ChangeNotifier {
   bool get launchAtLogin => _launchAtLogin;
   bool get busy => _busy;
   bool get latencyTesting => _latencyTesting;
+
+  void setActiveProfile(SdwanProfile profile) {
+    _service.updateProfile(profile);
+  }
 
   Future<void> initialize() async {
     await _runBusy(() async {

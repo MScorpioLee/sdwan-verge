@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sdwan_client/domain/sdwan_profile.dart';
 import 'package:sdwan_client/tun/domain_resolver.dart';
 import 'package:sdwan_client/tun/tun_controller.dart';
 import 'package:sdwan_client/tun/traffic_history_store.dart';
@@ -30,6 +31,13 @@ class FakeTunService implements TunService {
   bool syncDnsWithAcceleration = false;
   TunStatus? currentStatus;
   final calls = <String>[];
+
+  @override
+  void updateProfile(SdwanProfile profile) {
+    calls.add('updateProfile:${profile.id}');
+    cpeHost = profile.cpeIp;
+    syncDnsWithAcceleration = profile.syncDnsWithAcceleration;
+  }
 
   @override
   void updateDnsSync(bool enabled) {
