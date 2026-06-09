@@ -1,3 +1,4 @@
+import 'acceleration_mode.dart';
 import 'sdwan_profile.dart';
 import '../tun/tun_models.dart';
 
@@ -30,7 +31,7 @@ class AppConfig {
 
     final resolvedProfiles = profiles.isEmpty
         ? [SdwanProfile.defaults()]
-        : profiles;
+        : profiles.map(_normalizeOpenVpnProfile).toList();
     final requestedActive = json['activeProfileId'] as String? ?? 'default';
     final hasActive = resolvedProfiles.any(
       (profile) => profile.id == requestedActive,
@@ -77,6 +78,17 @@ class AppConfig {
       retainTrafficHistory: retainTrafficHistory ?? this.retainTrafficHistory,
     );
   }
+}
+
+SdwanProfile _normalizeOpenVpnProfile(SdwanProfile profile) {
+  if (profile.mode == AccelerationMode.openVpn) {
+    return profile;
+  }
+  return profile.copyWith(
+    mode: AccelerationMode.openVpn,
+    syncDnsWithAcceleration: false,
+    openVpn: profile.openVpn.copyWith(remoteHost: profile.cpeIp),
+  );
 }
 
 List<LatencyTarget> _latencyTargetsFromJson(Object? value) {

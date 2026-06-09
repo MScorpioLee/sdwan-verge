@@ -20,15 +20,6 @@ bool isValidIpv4(String value) {
 
 List<String> validateProfile(SdwanProfile profile) {
   final errors = <String>[];
-  if (!isValidIpv4(profile.cpeIp)) {
-    errors.add('CPE 网关地址格式不正确');
-  }
-  if (!isValidIpv4(profile.primaryDns)) {
-    errors.add('主 DNS 地址格式不正确');
-  }
-  if (!isValidIpv4(profile.secondaryDns)) {
-    errors.add('备用 DNS 地址格式不正确');
-  }
   if (profile.mode == AccelerationMode.openVpn) {
     if (profile.openVpn.remoteHost.trim().isEmpty) {
       errors.add('OpenVPN 服务器地址不能为空');
@@ -36,10 +27,17 @@ List<String> validateProfile(SdwanProfile profile) {
     if (profile.openVpn.remotePort < 1 || profile.openVpn.remotePort > 65535) {
       errors.add('OpenVPN 端口必须在 1-65535 之间');
     }
-    if (!_hasOpenVpnTrustMaterial(profile)) {
-      errors.add('OpenVPN 配置缺少服务端 CA，请重新导入完整 .ovpn 或添加 ca/capath；不需要客户端证书');
-    }
     errors.addAll(validateOpenVpnDirectives(profile.openVpn.customDirectives));
+  } else {
+    if (!isValidIpv4(profile.cpeIp)) {
+      errors.add('CPE 网关地址格式不正确');
+    }
+    if (!isValidIpv4(profile.primaryDns)) {
+      errors.add('主 DNS 地址格式不正确');
+    }
+    if (!isValidIpv4(profile.secondaryDns)) {
+      errors.add('备用 DNS 地址格式不正确');
+    }
   }
   return errors;
 }
@@ -78,24 +76,6 @@ bool _isBlockedOpenVpnDirective(String key, List<String> parts) {
   if (key == 'script-security') {
     final level = parts.length > 1 ? int.tryParse(parts[1]) : null;
     return level == null || level < 0 || level > 3;
-  }
-  return false;
-}
-
-bool _hasOpenVpnTrustMaterial(SdwanProfile profile) {
-  final blocks = profile.openVpn.inlineBlocks;
-  if ((blocks['ca'] ?? '').trim().isNotEmpty) {
-    return true;
-  }
-  for (final raw in profile.openVpn.customDirectives) {
-    final line = raw.trim();
-    if (line.isEmpty || line.startsWith('#') || line.startsWith(';')) {
-      continue;
-    }
-    final key = line.split(RegExp(r'\s+')).first.toLowerCase();
-    if (key == 'ca' || key == 'capath' || key == 'peer-fingerprint') {
-      return true;
-    }
   }
   return false;
 }

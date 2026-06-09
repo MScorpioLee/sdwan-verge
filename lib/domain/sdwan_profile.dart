@@ -16,13 +16,13 @@ class SdwanProfile {
 
   factory SdwanProfile.defaults() => SdwanProfile(
     id: 'default',
-    name: '默认加速配置',
+    name: 'OpenVPN UDP',
     companyName: '',
     cpeIp: '192.168.1.140',
     primaryDns: '223.5.5.5',
     secondaryDns: '114.114.114.114',
-    syncDnsWithAcceleration: true,
-    mode: AccelerationMode.halfRoute,
+    syncDnsWithAcceleration: false,
+    mode: AccelerationMode.openVpn,
     openVpn: OpenVpnProfile.defaults(),
   );
 

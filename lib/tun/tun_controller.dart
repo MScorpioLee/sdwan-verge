@@ -179,12 +179,9 @@ class TunController extends ChangeNotifier {
       if (!_status.helperInstalled) {
         _status = await _service.installHelper();
         if (!_status.helperInstalled) {
-          final openVpn = _status.adapterName.toLowerCase().contains('openvpn');
           _status = _status.copyWith(
             state: TunState.failed,
-            lastError:
-                _status.lastError ??
-                (openVpn ? 'OpenVPN 组件未安装，无法开启加速' : '半路由服务未安装，无法开启加速'),
+            lastError: _status.lastError ?? 'OpenVPN 组件未安装，无法开启加速',
           );
           _stopPolling();
           return;
@@ -197,7 +194,7 @@ class TunController extends ChangeNotifier {
         _status = _status.copyWith(
           state: TunState.failed,
           cpe: health,
-          lastError: health.error ?? 'CPE 连接失败，未启动 TUN',
+          lastError: health.error ?? 'OpenVPN 服务检测失败，未启动加速',
         );
         _stopPolling();
         return;
@@ -210,7 +207,7 @@ class TunController extends ChangeNotifier {
           permission: _status.permission,
           cpe: health,
           helperInstalled: _status.helperInstalled,
-          lastError: 'TUN 启动超时，请先停止或卸载助手后重试',
+          lastError: 'OpenVPN 启动超时，请先停止后台连接后重试',
         ),
       );
       if (started.state == TunState.failed) {

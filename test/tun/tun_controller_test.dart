@@ -293,7 +293,7 @@ void main() {
   });
 
   test(
-    'start fails without calling service start when CPE is unreachable',
+    'start fails without calling service start when OpenVPN health is unreachable',
     () async {
       final service = FakeTunService(
         health: const CpeHealth(host: '192.168.1.140', reachable: false),
@@ -305,7 +305,7 @@ void main() {
 
       expect(service.calls, ['status', 'installHelper', 'healthCheck']);
       expect(controller.status.state, TunState.failed);
-      expect(controller.status.lastError, contains('CPE'));
+      expect(controller.status.lastError, contains('OpenVPN 服务检测失败'));
     },
   );
 

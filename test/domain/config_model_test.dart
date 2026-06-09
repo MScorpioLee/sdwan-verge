@@ -5,7 +5,7 @@ import 'package:sdwan_client/domain/sdwan_profile.dart';
 import 'package:sdwan_client/tun/tun_models.dart';
 
 void main() {
-  test('default config uses BAT defaults and one active profile', () {
+  test('default config uses OpenVPN defaults and one active profile', () {
     final config = AppConfig.defaults();
     final active = config.activeProfile;
 
@@ -15,7 +15,8 @@ void main() {
     expect(active.cpeIp, '192.168.1.140');
     expect(active.primaryDns, '223.5.5.5');
     expect(active.secondaryDns, '114.114.114.114');
-    expect(active.syncDnsWithAcceleration, isTrue);
+    expect(active.syncDnsWithAcceleration, isFalse);
+    expect(active.mode, AccelerationMode.openVpn);
     expect(config.retainTrafficHistory, isFalse);
     expect(config.latencyTargets, contains(LatencyTarget.defaults.first));
     expect(
@@ -24,7 +25,7 @@ void main() {
     );
   });
 
-  test('legacy profile without DNS sync field defaults to CPE DNS sync', () {
+  test('legacy profile without DNS sync field migrates without DNS sync', () {
     final restored = AppConfig.fromJson({
       'activeProfileId': 'default',
       'profiles': [
@@ -39,10 +40,10 @@ void main() {
       ],
     });
 
-    expect(restored.activeProfile.syncDnsWithAcceleration, isTrue);
+    expect(restored.activeProfile.syncDnsWithAcceleration, isFalse);
   });
 
-  test('legacy profile migrates to half route mode', () {
+  test('legacy profile migrates to OpenVPN mode', () {
     final restored = AppConfig.fromJson({
       'activeProfileId': 'default',
       'profiles': [
@@ -57,9 +58,10 @@ void main() {
       ],
     });
 
-    expect(restored.activeProfile.mode, AccelerationMode.halfRoute);
+    expect(restored.activeProfile.mode, AccelerationMode.openVpn);
     expect(restored.activeProfile.openVpn, isNotNull);
     expect(restored.activeProfile.cpeIp, '192.168.1.140');
+    expect(restored.activeProfile.openVpn.remoteHost, '192.168.1.140');
   });
 
   test('serializes and deserializes app config', () {

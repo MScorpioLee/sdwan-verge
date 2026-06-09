@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../domain/acceleration_mode.dart';
 import '../domain/sdwan_profile.dart';
 import '../services/app_config_controller.dart';
 import '../tun/tun_controller.dart';
@@ -26,12 +25,6 @@ class DashboardPage extends StatelessWidget {
         final status = tunController.status;
         final cpe = status.cpe;
         final running = status.state == TunState.running;
-        final halfRoute =
-            status.adapterName.toLowerCase().contains('half route') ||
-            status.adapterName.contains('半路由');
-        final openVpn =
-            profile.mode == AccelerationMode.openVpn ||
-            status.adapterName.toLowerCase().contains('openvpn');
         final canStart =
             !tunController.busy &&
             status.permission != TunPermission.unsupported &&
@@ -91,7 +84,7 @@ class DashboardPage extends StatelessWidget {
                         value: profile.name,
                         valueColor: AppColors.primary,
                         rows: [
-                          _Kv('模式', _modeText(profile.mode)),
+                          _Kv('协议', profile.openVpn.protocol.label),
                           _Kv('远端', _profileEndpoint(profile)),
                         ],
                       ),
@@ -99,15 +92,15 @@ class DashboardPage extends StatelessWidget {
                     SizedBox(
                       width: cardW,
                       child: _InfoCard(
-                        icon: Icons.router_rounded,
-                        title: 'CPE 网关',
+                        icon: Icons.vpn_lock_rounded,
+                        title: 'OpenVPN 服务',
                         value: cpe.reachable ? '已连接' : '未连接',
                         valueColor: cpe.reachable
                             ? AppColors.success
                             : AppColors.danger,
                         rows: [
-                          _Kv('地址', cpe.host),
-                          _Kv('服务', cpe.serviceReady ? '可用' : '待检测'),
+                          _Kv('服务器', cpe.host),
+                          _Kv('进程', cpe.serviceReady ? '运行中' : '待启动'),
                         ],
                       ),
                     ),
@@ -116,20 +109,10 @@ class DashboardPage extends StatelessWidget {
                       child: _InfoCard(
                         icon: Icons.verified_user_rounded,
                         title: '运行信息',
-                        value: _permissionText(status, openVpn: openVpn),
+                        value: _permissionText(status),
                         valueColor: status.helperInstalled
                             ? AppColors.primary
                             : AppColors.warning,
-                        trailing: status.helperInstalled && !openVpn
-                            ? IconButton(
-                                onPressed: tunController.busy
-                                    ? null
-                                    : tunController.uninstallHelper,
-                                icon: const Icon(Icons.delete_outline_rounded),
-                                tooltip: '卸载助手',
-                                color: AppColors.danger,
-                              )
-                            : null,
                         rows: [
                           _Kv('入口', status.adapterName),
                           _Kv('出口', _profileEndpoint(profile)),
@@ -140,21 +123,15 @@ class DashboardPage extends StatelessWidget {
                       width: c.maxWidth,
                       child: _TrafficCard(stats: status.traffic),
                     ),
-                    SizedBox(
-                      width: c.maxWidth,
-                      child: _DiagnosticsCard(diagnostics: status.diagnostics),
-                    ),
                   ],
                 );
               },
             ),
             const SizedBox(height: 16),
             _NoteCard(
-              text: halfRoute
-                  ? 'IPv4 流量通过系统半路由交给 CPE ${profile.cpeIp}，源 IP 保持不变，由 CPE 负责分流。'
-                        '若连续检测不到 CPE，将自动删除半路由并回切本机直连；DNS 可在配置页选择跟随 CPE。'
-                  : '当前入口为 ${status.adapterName}，按当前 Profile 连接 ${_profileEndpoint(profile)}。'
-                        '若连续检测不到 CPE，将自动停止并回切本机直连。',
+              text:
+                  '当前入口为 OpenVPN，按当前 Profile 连接 ${_profileEndpoint(profile)}。'
+                  '关闭或退出客户端时会停止 OpenVPN 进程并恢复系统直连。',
             ),
             if (status.lastError != null && status.lastError!.isNotEmpty) ...[
               const SizedBox(height: 16),
@@ -179,43 +156,30 @@ class DashboardPage extends StatelessWidget {
 
   String _stateSubtitle(TunState state) {
     return switch (state) {
-      TunState.autoRecovered => 'CPE 异常，已恢复本机直连',
-      TunState.running => '正在通过当前配置接管流量',
-      TunState.starting => '正在启动当前配置…',
+      TunState.autoRecovered => 'OpenVPN 异常，已恢复本机直连',
+      TunState.running => '正在通过 OpenVPN 接管流量',
+      TunState.starting => '正在启动 OpenVPN…',
       TunState.stopping => '正在恢复直连…',
       TunState.failed => '启动失败，请查看下方提示',
       TunState.stopped => '点击右侧按钮开启加速',
     };
   }
 
-  String _permissionText(TunStatus status, {required bool openVpn}) {
+  String _permissionText(TunStatus status) {
     if (!status.helperInstalled) {
-      return openVpn ? '待安装 OpenVPN' : '待安装助手';
+      return '待安装 OpenVPN';
     }
     return switch (status.permission) {
-      TunPermission.ready => openVpn ? 'OpenVPN 就绪' : '已授权',
+      TunPermission.ready => 'OpenVPN 就绪',
       TunPermission.needsVpnConsent => '等待授权',
-      TunPermission.needsHelperInstall => openVpn ? '待安装 OpenVPN' : '待安装助手',
+      TunPermission.needsHelperInstall => '待安装 OpenVPN',
       TunPermission.denied => '授权被拒绝',
       TunPermission.unsupported => '暂未接入',
     };
   }
 
-  String _modeText(AccelerationMode mode) {
-    return switch (mode) {
-      AccelerationMode.openVpn => 'OpenVPN',
-      AccelerationMode.halfRoute => 'Half Route',
-      AccelerationMode.legacyTun => 'Legacy TUN',
-    };
-  }
-
   String _profileEndpoint(SdwanProfile profile) {
-    return switch (profile.mode) {
-      AccelerationMode.openVpn =>
-        '${profile.openVpn.remoteHost}:${profile.openVpn.remotePort}/${profile.openVpn.protocol.ovpnValue}',
-      AccelerationMode.halfRoute => 'CPE ${profile.cpeIp}',
-      AccelerationMode.legacyTun => 'CPE ${profile.cpeIp}',
-    };
+    return '${profile.openVpn.remoteHost}:${profile.openVpn.remotePort}/${profile.openVpn.protocol.ovpnValue}';
   }
 }
 
@@ -437,98 +401,6 @@ class _TrafficMetric extends StatelessWidget {
   }
 }
 
-class _DiagnosticsCard extends StatelessWidget {
-  const _DiagnosticsCard({required this.diagnostics});
-
-  final TunDiagnostics diagnostics;
-
-  @override
-  Widget build(BuildContext context) {
-    final warningColor = diagnostics.hasWarnings
-        ? AppColors.warning
-        : AppColors.success;
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: panelDecoration(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: AppColors.primarySoft,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  diagnostics.hasWarnings
-                      ? Icons.warning_amber_rounded
-                      : Icons.health_and_safety_rounded,
-                  size: 18,
-                  color: warningColor,
-                ),
-              ),
-              const SizedBox(width: 10),
-              const Text(
-                '链路诊断',
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              _TrafficMetric(
-                label: '出站包',
-                value: diagnostics.txPackets.toString(),
-                icon: Icons.call_made_rounded,
-              ),
-              _TrafficMetric(
-                label: '回程包',
-                value: diagnostics.rxPackets.toString(),
-                icon: Icons.call_received_rounded,
-              ),
-              _TrafficMetric(
-                label: '出站丢弃',
-                value: diagnostics.txDropped.toString(),
-                icon: Icons.upload_file_rounded,
-              ),
-              _TrafficMetric(
-                label: '回程丢弃',
-                value: diagnostics.rxDropped.toString(),
-                icon: Icons.download_for_offline_rounded,
-              ),
-              _TrafficMetric(
-                label: 'NAT Miss',
-                value: diagnostics.natMisses.toString(),
-                icon: Icons.link_off_rounded,
-              ),
-              _TrafficMetric(
-                label: '发送失败',
-                value: diagnostics.sendFailures.toString(),
-                icon: Icons.error_outline_rounded,
-              ),
-              _TrafficMetric(
-                label: 'UDP 443',
-                value: diagnostics.udp443Packets.toString(),
-                icon: Icons.bolt_rounded,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _PowerButton extends StatelessWidget {
   const _PowerButton({
     required this.running,
@@ -615,7 +487,6 @@ class _InfoCard extends StatelessWidget {
     required this.value,
     required this.valueColor,
     required this.rows,
-    this.trailing,
   });
 
   final IconData icon;
@@ -623,7 +494,6 @@ class _InfoCard extends StatelessWidget {
   final String value;
   final Color valueColor;
   final List<_Kv> rows;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -662,10 +532,6 @@ class _InfoCard extends StatelessWidget {
                   color: valueColor,
                 ),
               ),
-              if (trailing != null) ...[
-                const SizedBox(width: 4),
-                SizedBox(width: 32, height: 32, child: trailing),
-              ],
             ],
           ),
           const SizedBox(height: 14),

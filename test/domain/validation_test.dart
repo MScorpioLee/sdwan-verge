@@ -20,7 +20,10 @@ void main() {
   });
 
   test('validates profile fields with Chinese messages', () {
-    final profile = SdwanProfile.defaults().copyWith(cpeIp: 'bad');
+    final profile = SdwanProfile.defaults().copyWith(
+      mode: AccelerationMode.halfRoute,
+      cpeIp: 'bad',
+    );
 
     final errors = validateProfile(profile);
 
@@ -60,6 +63,17 @@ void main() {
     expect(errors, contains('OpenVPN 自定义配置不允许重复或危险指令：up'));
   });
 
+  test('allows OpenVPN server domain names', () {
+    final profile = SdwanProfile.openVpnDefaults().copyWith(
+      cpeIp: 'vpn.example.com',
+      openVpn: OpenVpnProfile.defaults().copyWith(
+        remoteHost: 'vpn.example.com',
+      ),
+    );
+
+    expect(validateProfile(profile), isEmpty);
+  });
+
   test('allows script-security levels when script hooks remain blocked', () {
     final errors = validateOpenVpnDirectives(const [
       'script-security 0',
@@ -71,7 +85,7 @@ void main() {
     expect(errors, isEmpty);
   });
 
-  test('requires OpenVPN trust material before starting', () {
+  test('profile validation allows editable OpenVPN templates without CA', () {
     final missingCa = SdwanProfile.openVpnDefaults().copyWith(
       mode: AccelerationMode.openVpn,
       openVpn: OpenVpnProfile.defaults().copyWith(inlineBlocks: const {}),
@@ -87,10 +101,7 @@ void main() {
       ),
     );
 
-    expect(
-      validateProfile(missingCa),
-      contains('OpenVPN 配置缺少服务端 CA，请重新导入完整 .ovpn 或添加 ca/capath；不需要客户端证书'),
-    );
+    expect(validateProfile(missingCa), isEmpty);
     expect(validateProfile(inlineCa), isEmpty);
     expect(validateProfile(caPath), isEmpty);
   });

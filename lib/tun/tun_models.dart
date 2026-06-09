@@ -450,7 +450,7 @@ class CpeHealth {
 class TunStatus {
   const TunStatus({
     required this.mode,
-    this.adapterName = '半路由',
+    this.adapterName = 'OpenVPN',
     required this.state,
     required this.permission,
     required this.cpe,
@@ -463,7 +463,7 @@ class TunStatus {
   factory TunStatus.defaults({String cpeHost = '192.168.1.140'}) {
     return TunStatus(
       mode: TunMode.tun,
-      adapterName: '半路由',
+      adapterName: 'OpenVPN',
       state: TunState.stopped,
       permission: TunPermission.needsVpnConsent,
       cpe: CpeHealth(host: cpeHost, reachable: false),

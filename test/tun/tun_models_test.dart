@@ -2,11 +2,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/tun/tun_models.dart';
 
 void main() {
-  test('default TUN status is stopped and points at CPE', () {
+  test('default status is stopped and points at OpenVPN server', () {
     final status = TunStatus.defaults();
 
     expect(status.mode, TunMode.tun);
-    expect(status.adapterName, '半路由');
+    expect(status.adapterName, 'OpenVPN');
     expect(status.state, TunState.stopped);
     expect(status.permission, TunPermission.needsVpnConsent);
     expect(status.cpe.host, '192.168.1.140');
@@ -71,7 +71,7 @@ void main() {
     final updated = status.copyWith(adapterName: 'Windows Half Route');
 
     expect(updated.adapterName, 'Windows Half Route');
-    expect(status.adapterName, '半路由');
+    expect(status.adapterName, 'OpenVPN');
   });
 
   test('latency results expose success timeout and failure state', () {

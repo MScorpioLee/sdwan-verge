@@ -36,8 +36,6 @@ class _SettingsPageState extends State<SettingsPage> {
       children: [
         Text('设置', style: Theme.of(context).textTheme.headlineMedium),
         const SizedBox(height: 20),
-        _SystemSettingsCard(tunController: widget.tunController),
-        const SizedBox(height: 20),
         _TrafficHistorySwitch(
           value: widget.controller.config.retainTrafficHistory,
           onChanged: _setRetainTrafficHistory,
@@ -119,7 +117,7 @@ class _LaunchAtLoginSwitch extends StatelessWidget {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  '登录 macOS 后自动打开客户端，后台保持菜单栏入口。',
+                  '登录系统后自动打开客户端，后台保持托盘入口。',
                   style: TextStyle(
                     fontSize: 12,
                     color: AppColors.textSecondary,
@@ -190,100 +188,6 @@ class _TrafficHistorySwitch extends StatelessWidget {
           Switch(value: value, onChanged: onChanged),
         ],
       ),
-    );
-  }
-}
-
-class _SystemSettingsCard extends StatelessWidget {
-  const _SystemSettingsCard({required this.tunController});
-
-  final TunController tunController;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: tunController,
-      builder: (context, _) {
-        final status = tunController.status;
-        final installed = status.helperInstalled;
-        return Container(
-          padding: const EdgeInsets.all(18),
-          decoration: panelDecoration(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '系统设置',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Icon(
-                    installed
-                        ? Icons.check_circle_rounded
-                        : Icons.pause_circle_outline_rounded,
-                    color: installed
-                        ? AppColors.success
-                        : AppColors.textSecondary,
-                  ),
-                  const SizedBox(width: 10),
-                  const Text(
-                    '系统加速模式',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Tooltip(
-                    message: installed ? '助手已安装，日常开关不再需要重复输入密码' : '首次安装需要管理员密码',
-                    child: const Icon(
-                      Icons.settings_rounded,
-                      size: 18,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: tunController.busy || !installed
-                        ? null
-                        : tunController.uninstallHelper,
-                    icon: const Icon(Icons.delete_outline_rounded),
-                    tooltip: '卸载助手',
-                    color: AppColors.danger,
-                  ),
-                  Switch(
-                    value: installed,
-                    onChanged: tunController.busy
-                        ? null
-                        : (value) {
-                            if (value) {
-                              tunController.installHelper();
-                            } else {
-                              tunController.uninstallHelper();
-                            }
-                          },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                installed ? '助手已注册，开启/关闭无需重复授权' : '未注册助手，开启/关闭会请求管理员授权',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }

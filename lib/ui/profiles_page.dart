@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
-import '../domain/acceleration_mode.dart';
 import '../domain/sdwan_profile.dart';
 import '../services/app_config_controller.dart';
 import '../services/credential_store.dart';
@@ -84,9 +83,7 @@ class ProfilesPage extends StatelessWidget {
                     ),
                   );
                 },
-                onExport: profile.mode == AccelerationMode.openVpn
-                    ? () => _exportOvpn(context, profile)
-                    : null,
+                onExport: () => _exportOvpn(context, profile),
                 onDelete: config.profiles.length == 1
                     ? null
                     : () => controller.deleteProfile(profile.id),
@@ -166,7 +163,7 @@ class _ProfileCard extends StatelessWidget {
               color: AppColors.primarySoft,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(_modeIcon(profile.mode), color: AppColors.primary),
+            child: const Icon(Icons.vpn_lock_rounded, color: AppColors.primary),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -193,7 +190,7 @@ class _ProfileCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '${_modeLabel(profile.mode)} · ${_endpointText(profile)}',
+                  _endpointText(profile),
                   style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.textSecondary,
@@ -223,29 +220,8 @@ class _ProfileCard extends StatelessWidget {
     );
   }
 
-  IconData _modeIcon(AccelerationMode mode) {
-    return switch (mode) {
-      AccelerationMode.openVpn => Icons.vpn_lock_rounded,
-      AccelerationMode.halfRoute => Icons.alt_route_rounded,
-      AccelerationMode.legacyTun => Icons.hub_rounded,
-    };
-  }
-
-  String _modeLabel(AccelerationMode mode) {
-    return switch (mode) {
-      AccelerationMode.openVpn => 'OpenVPN',
-      AccelerationMode.halfRoute => 'Half Route',
-      AccelerationMode.legacyTun => 'Legacy TUN',
-    };
-  }
-
   String _endpointText(SdwanProfile profile) {
-    return switch (profile.mode) {
-      AccelerationMode.openVpn =>
-        '${profile.openVpn.remoteHost}:${profile.openVpn.remotePort}/${profile.openVpn.protocol.ovpnValue}',
-      AccelerationMode.halfRoute => 'CPE ${profile.cpeIp}',
-      AccelerationMode.legacyTun => 'CPE ${profile.cpeIp}',
-    };
+    return 'OpenVPN · ${profile.openVpn.remoteHost}:${profile.openVpn.remotePort}/${profile.openVpn.protocol.ovpnValue}';
   }
 }
 

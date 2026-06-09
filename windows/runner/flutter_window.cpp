@@ -26,7 +26,9 @@ constexpr char kTunChannelName[] = "sdwan_client/tun";
 constexpr char kDefaultCpeHost[] = "192.168.1.140";
 constexpr ULONGLONG kOpenVpnConnectionsCacheMs = 15000;
 std::string g_last_cpe_host = kDefaultCpeHost;
+std::string g_last_mode = "openvpn";
 bool g_last_sync_dns = false;
+std::optional<flutter::EncodableValue> g_last_openvpn_args;
 int64_t g_openvpn_last_tx_bytes = 0;
 int64_t g_openvpn_last_rx_bytes = 0;
 ULONGLONG g_openvpn_last_traffic_tick = 0;
@@ -1405,7 +1407,72 @@ bool BoolArg(const flutter::EncodableValue* args, const std::string& key,
   return value == nullptr ? fallback : *value;
 }
 
+bool EncodableMapHasKey(const flutter::EncodableMap& map,
+                        const std::string& key) {
+  return map.find(flutter::EncodableValue(key)) != map.end();
+}
+
+void PreserveOpenVpnSecret(flutter::EncodableMap* next,
+                           const flutter::EncodableMap& previous,
+                           const std::string& key) {
+  if (EncodableMapHasKey(*next, key)) {
+    return;
+  }
+  const auto entry = previous.find(flutter::EncodableValue(key));
+  if (entry != previous.end()) {
+    (*next)[flutter::EncodableValue(key)] = entry->second;
+  }
+}
+
+void RememberTrayArguments(const flutter::EncodableValue* args,
+                           const std::string& mode,
+                           const std::string& host,
+                           const std::string& method) {
+  g_last_mode = mode == "openvpn" ? "openvpn" : "halfRoute";
+  if (g_last_mode != "openvpn") {
+    return;
+  }
+
+  flutter::EncodableMap next;
+  if (args) {
+    if (const auto* map = std::get_if<flutter::EncodableMap>(args)) {
+      next = *map;
+    }
+  }
+  next[flutter::EncodableValue("mode")] = flutter::EncodableValue("openvpn");
+  next[flutter::EncodableValue("cpeHost")] = flutter::EncodableValue(host);
+  if (!EncodableMapHasKey(next, "openvpnRemoteHost")) {
+    next[flutter::EncodableValue("openvpnRemoteHost")] =
+        flutter::EncodableValue(host);
+  }
+
+  if (method != "start" && g_last_openvpn_args.has_value()) {
+    if (const auto* previous =
+            std::get_if<flutter::EncodableMap>(&g_last_openvpn_args.value())) {
+      PreserveOpenVpnSecret(&next, *previous, "openvpnUsername");
+      PreserveOpenVpnSecret(&next, *previous, "openvpnPassword");
+    }
+  }
+  g_last_openvpn_args = flutter::EncodableValue(next);
+}
+
+const flutter::EncodableValue* LastOpenVpnArguments() {
+  if (!g_last_openvpn_args.has_value()) {
+    flutter::EncodableMap args;
+    args[flutter::EncodableValue("mode")] = flutter::EncodableValue("openvpn");
+    args[flutter::EncodableValue("cpeHost")] =
+        flutter::EncodableValue(g_last_cpe_host);
+    args[flutter::EncodableValue("openvpnRemoteHost")] =
+        flutter::EncodableValue(g_last_cpe_host);
+    g_last_openvpn_args = flutter::EncodableValue(args);
+  }
+  return &g_last_openvpn_args.value();
+}
+
 bool IsAccelerationRunning() {
+  if (g_last_mode == "openvpn") {
+    return OpenVpnPidRunning();
+  }
   const auto values =
       ParseKeyValueLines(RunHelper(HelperArgs(L"status", g_last_cpe_host)));
   const std::string state = StringValue(values, "state", "stopped");
@@ -1413,6 +1480,14 @@ bool IsAccelerationRunning() {
 }
 
 void ToggleAccelerationFromTray() {
+  if (g_last_mode == "openvpn") {
+    if (OpenVpnPidRunning()) {
+      StopOpenVpn(LastOpenVpnArguments());
+    } else {
+      StartOpenVpn(LastOpenVpnArguments());
+    }
+    return;
+  }
   if (IsAccelerationRunning()) {
     RunHelper(HelperArgs(L"stop", g_last_cpe_host));
   } else {
@@ -1427,6 +1502,12 @@ void StopAccelerationBeforeExit() {
     return;
   }
   g_stop_before_exit_called = true;
+  if (g_last_mode == "openvpn") {
+    if (OpenVpnPidRunning()) {
+      StopOpenVpn(LastOpenVpnArguments());
+    }
+    return;
+  }
   RunHelper(HelperArgs(L"stop", g_last_cpe_host));
 }
 }  // namespace
@@ -1465,9 +1546,12 @@ bool FlutterWindow::OnCreate() {
     const bool sync_dns = BoolArg(call.arguments(), "syncDns", false);
     g_last_cpe_host = host;
     g_last_sync_dns = sync_dns;
+    RememberTrayArguments(call.arguments(), mode, host, method);
     if (method == "status") {
       if (mode == "openvpn") {
-        result->Success(OpenVpnStatus(call.arguments(), ""));
+        const auto status = OpenVpnStatus(call.arguments(), "");
+        RefreshTrayIcon();
+        result->Success(status);
         return;
       }
       const auto status =
@@ -1500,7 +1584,9 @@ bool FlutterWindow::OnCreate() {
           ConnectionsFromText(RunHelper(HelperArgs(L"connections", host, limit))));
     } else if (method == "installHelper") {
       if (mode == "openvpn") {
-        result->Success(InstallOpenVpnDependencies(call.arguments()));
+        const auto status = InstallOpenVpnDependencies(call.arguments());
+        RefreshTrayIcon();
+        result->Success(status);
         return;
       }
       const bool ok = RunHelperElevated(L"install");
@@ -1511,7 +1597,9 @@ bool FlutterWindow::OnCreate() {
       result->Success(StatusFromText(text, host));
     } else if (method == "uninstallHelper") {
       if (mode == "openvpn") {
-        result->Success(StopOpenVpn(call.arguments()));
+        const auto status = StopOpenVpn(call.arguments());
+        RefreshTrayIcon();
+        result->Success(status);
         return;
       }
       const bool ok = RunHelperElevated(L"uninstall");
@@ -1522,7 +1610,9 @@ bool FlutterWindow::OnCreate() {
       result->Success(StatusFromText(text, host));
     } else if (method == "start") {
       if (mode == "openvpn") {
-        result->Success(StartOpenVpn(call.arguments()));
+        const auto status = StartOpenVpn(call.arguments());
+        RefreshTrayIcon();
+        result->Success(status);
         return;
       }
       const auto status =
@@ -1532,7 +1622,9 @@ bool FlutterWindow::OnCreate() {
       result->Success(status);
     } else if (method == "stop") {
       if (mode == "openvpn") {
-        result->Success(StopOpenVpn(call.arguments()));
+        const auto status = StopOpenVpn(call.arguments());
+        RefreshTrayIcon();
+        result->Success(status);
         return;
       }
       const auto status =

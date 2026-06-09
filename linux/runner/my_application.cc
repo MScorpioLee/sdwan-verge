@@ -28,6 +28,8 @@ struct _MyApplication {
   GtkWidget* tray_menu;
   GtkWidget* tray_toggle_item;
   gchar* last_cpe_host;
+  gchar* last_mode;
+  gchar* last_openvpn_host;
   gboolean tun_running;
   gboolean quit_requested;
   guint64 base_tx;
@@ -48,6 +50,8 @@ static constexpr char kDefaultCpeHost[] = "192.168.1.140";
 static constexpr char kLinuxAdapterName[] = "Linux Half Route";
 static constexpr char kLogPath[] = "/tmp/sdwan-verge-linux-events.log";
 
+static gboolean is_openvpn_mode(const gchar* mode);
+
 static const gchar* last_cpe_host(MyApplication* self) {
   return self->last_cpe_host == nullptr || self->last_cpe_host[0] == '\0'
              ? kDefaultCpeHost
@@ -58,6 +62,31 @@ static void remember_cpe_host(MyApplication* self, const gchar* host) {
   g_free(self->last_cpe_host);
   self->last_cpe_host = g_strdup(
       host == nullptr || host[0] == '\0' ? kDefaultCpeHost : host);
+}
+
+static const gchar* last_mode(MyApplication* self) {
+  return self->last_mode == nullptr || self->last_mode[0] == '\0'
+             ? "openvpn"
+             : self->last_mode;
+}
+
+static const gchar* last_openvpn_host(MyApplication* self) {
+  return self->last_openvpn_host == nullptr || self->last_openvpn_host[0] == '\0'
+             ? last_cpe_host(self)
+             : self->last_openvpn_host;
+}
+
+static void remember_mode(MyApplication* self,
+                          const gchar* mode,
+                          const gchar* openvpn_host) {
+  g_free(self->last_mode);
+  self->last_mode = g_strdup(is_openvpn_mode(mode) ? "openvpn" : "halfRoute");
+  if (is_openvpn_mode(mode)) {
+    g_free(self->last_openvpn_host);
+    self->last_openvpn_host = g_strdup(
+        openvpn_host == nullptr || openvpn_host[0] == '\0' ? last_cpe_host(self)
+                                                           : openvpn_host);
+  }
 }
 
 static gchar* bundled_tray_icon_path(const gchar* filename) {
@@ -671,22 +700,30 @@ static void update_tun_state_from_status(MyApplication* self, FlValue* status) {
                       g_strcmp0(state_text, "starting") == 0;
 }
 
+static gboolean tray_acceleration_running(MyApplication* self) {
+  if (is_openvpn_mode(last_mode(self))) {
+    self->tun_running = openvpn_pid_running();
+  }
+  return self->tun_running;
+}
+
 static void update_tray_icon(MyApplication* self) {
   if (self->status_icon == nullptr) {
     return;
   }
+  const gboolean running = tray_acceleration_running(self);
   const gchar* icon_name =
-      self->tun_running ? "tray-active.png" : "tray-idle.png";
+      running ? "tray-active.png" : "tray-idle.png";
   g_autofree gchar* icon_path = bundled_tray_icon_path(icon_name);
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   gtk_status_icon_set_from_file(GTK_STATUS_ICON(self->status_icon), icon_path);
   gtk_status_icon_set_tooltip_text(
       GTK_STATUS_ICON(self->status_icon),
-      self->tun_running ? "SD-WAN Verge - 已加速" : "SD-WAN Verge");
+      running ? "SD-WAN Verge - 已加速" : "SD-WAN Verge");
   G_GNUC_END_IGNORE_DEPRECATIONS
   if (self->tray_toggle_item != nullptr) {
     gtk_menu_item_set_label(GTK_MENU_ITEM(self->tray_toggle_item),
-                            self->tun_running ? "关闭加速" : "开启加速");
+                            running ? "关闭加速" : "开启加速");
   }
 }
 
@@ -891,18 +928,30 @@ static void tray_show_cb(GtkMenuItem* item, gpointer user_data) {
 
 static void tray_toggle_cb(GtkMenuItem* item, gpointer user_data) {
   MyApplication* self = MY_APPLICATION(user_data);
-  g_autoptr(FlValue) result =
-      self->tun_running ? stop_acceleration(self, last_cpe_host(self))
-                        : start_acceleration(self, last_cpe_host(self));
+  g_autoptr(FlValue) result = nullptr;
+  if (is_openvpn_mode(last_mode(self))) {
+    if (tray_acceleration_running(self)) {
+      result = stop_openvpn(self, last_openvpn_host(self));
+    } else {
+      show_main_window(self);
+      result = openvpn_status_value(last_openvpn_host(self), "");
+    }
+  } else {
+    result = self->tun_running ? stop_acceleration(self, last_cpe_host(self))
+                               : start_acceleration(self, last_cpe_host(self));
+  }
   update_tun_state_from_status(self, result);
   update_tray_icon(self);
 }
 
 static void stop_acceleration_before_exit(MyApplication* self) {
-  if (self == nullptr || !self->tun_running) {
+  if (self == nullptr || !tray_acceleration_running(self)) {
     return;
   }
-  g_autoptr(FlValue) result = stop_acceleration(self, last_cpe_host(self));
+  g_autoptr(FlValue) result =
+      is_openvpn_mode(last_mode(self))
+          ? stop_openvpn(self, last_openvpn_host(self))
+          : stop_acceleration(self, last_cpe_host(self));
   update_tun_state_from_status(self, result);
   update_tray_icon(self);
 }
@@ -982,6 +1031,7 @@ static void tun_method_call_cb(FlMethodChannel* channel,
   const gboolean openvpn_mode = g_strcmp0(mode, "openvpn") == 0;
   const gchar* openvpn_host = openvpn_remote_host_from_call(method_call, host);
   remember_cpe_host(self, host);
+  remember_mode(self, mode, openvpn_host);
   g_autoptr(FlMethodResponse) response = nullptr;
 
   if (g_strcmp0(method, "status") == 0) {
@@ -1166,6 +1216,8 @@ static void my_application_dispose(GObject* object) {
   self->tray_toggle_item = nullptr;
   self->window = nullptr;
   g_clear_pointer(&self->last_cpe_host, g_free);
+  g_clear_pointer(&self->last_mode, g_free);
+  g_clear_pointer(&self->last_openvpn_host, g_free);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
@@ -1181,6 +1233,7 @@ static void my_application_class_init(MyApplicationClass* klass) {
 
 static void my_application_init(MyApplication* self) {
   remember_cpe_host(self, kDefaultCpeHost);
+  remember_mode(self, "openvpn", kDefaultCpeHost);
   reset_traffic_baseline(self);
 }
 

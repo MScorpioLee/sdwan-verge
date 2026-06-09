@@ -13,6 +13,11 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   private var statusItem: NSStatusItem?
   private var statusToggleItem: NSMenuItem?
   private var lastCpeHost = "192.168.1.140"
+  private var lastStatusMenuArguments: [String: Any] = [
+    "mode": "openvpn",
+    "cpeHost": "192.168.1.140",
+    "openvpnRemoteHost": "192.168.1.140",
+  ]
   private var didStopAccelerationBeforeExit = false
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
@@ -68,6 +73,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
 
   private func handleTunCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     lastCpeHost = cpeHost(from: call.arguments)
+    rememberStatusMenuArguments(call.arguments, method: call.method)
     switch call.method {
     case "status":
       let status = helperStatus(call.arguments)
@@ -160,7 +166,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       return
     }
     didStopAccelerationBeforeExit = true
-    guard installedHelperAvailable() || isAccelerationRunning(arguments: statusMenuArguments()) else {
+    guard isAccelerationRunning(arguments: statusMenuArguments()) else {
       return
     }
     _ = stopHelper(statusMenuArguments())
@@ -187,7 +193,29 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func statusMenuArguments() -> [String: Any] {
-    ["cpeHost": lastCpeHost]
+    lastStatusMenuArguments
+  }
+
+  private func rememberStatusMenuArguments(_ arguments: Any?, method: String) {
+    var next = arguments as? [String: Any] ?? [:]
+    lastCpeHost = cpeHost(from: next)
+    if mode(from: next) == "openvpn" {
+      next["mode"] = "openvpn"
+      next["cpeHost"] = lastCpeHost
+      if next["openvpnRemoteHost"] == nil {
+        next["openvpnRemoteHost"] = lastCpeHost
+      }
+      if method != "start" {
+        for key in ["openvpnUsername", "openvpnPassword"] where next[key] == nil {
+          if let cached = lastStatusMenuArguments[key] {
+            next[key] = cached
+          }
+        }
+      }
+      lastStatusMenuArguments = next
+      return
+    }
+    lastStatusMenuArguments = ["mode": mode(from: next), "cpeHost": lastCpeHost]
   }
 
   private func isAccelerationRunning(arguments: Any? = nil) -> Bool {

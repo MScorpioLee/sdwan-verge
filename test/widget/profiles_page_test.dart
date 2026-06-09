@@ -35,7 +35,7 @@ void main() {
     );
 
     expect(find.text('配置'), findsOneWidget);
-    expect(find.text('默认加速配置'), findsOneWidget);
+    expect(find.text('OpenVPN UDP'), findsOneWidget);
     expect(find.text('公司 UDP'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(OutlinedButton, '使用').last);

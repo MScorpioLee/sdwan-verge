@@ -6,9 +6,9 @@ class HelpPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const items = [
-      ('IPv4 半路由模式', '软件只接管 IPv4 流量，默认开启“DNS 跟随 CPE”，加速期间临时把 IPv4 DNS 指向 CPE。'),
-      ('CPE 入口', 'TUN 后端只负责把 IPv4 流量稳定转发到配置的 CPE，分流策略由 CPE 执行。'),
-      ('自动切回', '软件会持续检测半路由和 CPE 的连接，连续失败后自动删除半路由，让系统恢复本机直连。'),
+      ('OpenVPN 加速', '客户端按当前 Profile 启动 OpenVPN，流量由 OpenVPN 虚拟网卡接管。'),
+      ('配置管理', '可以导入 .ovpn，也可以手动编辑服务器、协议、端口、账号密码和自定义指令。'),
+      ('退出保护', '从托盘退出时会先关闭 OpenVPN，避免后台残留加速进程。'),
     ];
 
     return ListView(

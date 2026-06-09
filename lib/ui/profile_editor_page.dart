@@ -25,7 +25,6 @@ class ProfileEditorPage extends StatefulWidget {
 
 class _ProfileEditorPageState extends State<ProfileEditorPage> {
   late final TextEditingController _name;
-  late final TextEditingController _cpe;
   late final TextEditingController _remoteHost;
   late final TextEditingController _remotePort;
   late final TextEditingController _mtu;
@@ -34,7 +33,6 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
   late final TextEditingController _password;
   late final TextEditingController _customDirectives;
   late OpenVpnProtocol _protocol;
-  late bool _syncDns;
   late bool _ipv4Only;
   late bool _authUserPass;
   String? _message;
@@ -45,7 +43,6 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     final profile = widget.profile;
     final openVpn = profile.openVpn;
     _name = TextEditingController(text: profile.name);
-    _cpe = TextEditingController(text: profile.cpeIp);
     _remoteHost = TextEditingController(text: openVpn.remoteHost);
     _remotePort = TextEditingController(text: openVpn.remotePort.toString());
     _mtu = TextEditingController(text: openVpn.mtu);
@@ -56,7 +53,6 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
       text: openVpn.customDirectives.join('\n'),
     );
     _protocol = openVpn.protocol;
-    _syncDns = profile.syncDnsWithAcceleration;
     _ipv4Only = openVpn.ipv4Only;
     _authUserPass = openVpn.authUserPass;
     _loadCredential();
@@ -65,7 +61,6 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
   @override
   void dispose() {
     _name.dispose();
-    _cpe.dispose();
     _remoteHost.dispose();
     _remotePort.dispose();
     _mtu.dispose();
@@ -78,7 +73,6 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = widget.profile;
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -91,86 +85,72 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
         children: [
           _Section(
             title: '基本信息',
+            children: [_Field(label: '配置名称', controller: _name)],
+          ),
+          const SizedBox(height: 16),
+          _Section(
+            title: 'OpenVPN',
             children: [
-              _Field(label: '配置名称', controller: _name),
-              _Field(label: 'CPE 地址', controller: _cpe),
+              SegmentedButton<OpenVpnProtocol>(
+                segments: const [
+                  ButtonSegment(
+                    value: OpenVpnProtocol.udp4,
+                    label: Text('UDP IPv4'),
+                  ),
+                  ButtonSegment(
+                    value: OpenVpnProtocol.tcpClient,
+                    label: Text('TCP IPv4'),
+                  ),
+                ],
+                selected: {_protocol},
+                onSelectionChanged: (value) {
+                  setState(() => _protocol = value.single);
+                },
+              ),
+              const SizedBox(height: 12),
+              _Field(label: '服务器地址', controller: _remoteHost),
+              _Field(label: '端口', controller: _remotePort),
+              _Field(label: 'MTU', controller: _mtu),
+              _Field(label: 'MSS Fix', controller: _mssfix),
               _SwitchTile(
                 child: SwitchListTile(
-                  key: const ValueKey('profile-sync-dns-switch'),
-                  value: _syncDns,
-                  onChanged: (value) => setState(() => _syncDns = value),
-                  title: const Text('DNS 跟随 CPE'),
-                  subtitle: const Text('开启当前配置时把 IPv4 DNS 临时指向 CPE'),
+                  value: _ipv4Only,
+                  onChanged: (value) => setState(() => _ipv4Only = value),
+                  title: const Text('仅 IPv4'),
+                  subtitle: const Text('忽略 OpenVPN 服务端推送的 IPv6 路由'),
+                ),
+              ),
+              _SwitchTile(
+                child: SwitchListTile(
+                  value: _authUserPass,
+                  onChanged: (value) {
+                    setState(() => _authUserPass = value);
+                  },
+                  title: const Text('需要账号密码'),
+                  subtitle: const Text('密码仅本地保存，不进入导出配置'),
+                ),
+              ),
+              if (_authUserPass) ...[
+                _Field(label: '用户名', controller: _username),
+                _Field(label: '密码', controller: _password, obscureText: true),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          _Section(
+            title: 'OpenVPN 自定义配置',
+            children: [
+              TextField(
+                controller: _customDirectives,
+                minLines: 6,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'verb 3\nnobind\nresolv-retry infinite',
                 ),
               ),
             ],
           ),
-          if (profile.mode == AccelerationMode.openVpn) ...[
-            const SizedBox(height: 16),
-            _Section(
-              title: 'OpenVPN',
-              children: [
-                SegmentedButton<OpenVpnProtocol>(
-                  segments: const [
-                    ButtonSegment(
-                      value: OpenVpnProtocol.udp4,
-                      label: Text('UDP IPv4'),
-                    ),
-                    ButtonSegment(
-                      value: OpenVpnProtocol.tcpClient,
-                      label: Text('TCP IPv4'),
-                    ),
-                  ],
-                  selected: {_protocol},
-                  onSelectionChanged: (value) {
-                    setState(() => _protocol = value.single);
-                  },
-                ),
-                const SizedBox(height: 12),
-                _Field(label: '服务器地址', controller: _remoteHost),
-                _Field(label: '端口', controller: _remotePort),
-                _Field(label: 'MTU', controller: _mtu),
-                _Field(label: 'MSS Fix', controller: _mssfix),
-                _SwitchTile(
-                  child: SwitchListTile(
-                    value: _ipv4Only,
-                    onChanged: (value) => setState(() => _ipv4Only = value),
-                    title: const Text('仅 IPv4'),
-                    subtitle: const Text('忽略 OpenVPN 服务端推送的 IPv6 路由'),
-                  ),
-                ),
-                _SwitchTile(
-                  child: SwitchListTile(
-                    value: _authUserPass,
-                    onChanged: (value) {
-                      setState(() => _authUserPass = value);
-                    },
-                    title: const Text('需要账号密码'),
-                    subtitle: const Text('密码仅本地保存，不进入导出配置'),
-                  ),
-                ),
-                if (_authUserPass) ...[
-                  _Field(label: '用户名', controller: _username),
-                  _Field(label: '密码', controller: _password, obscureText: true),
-                ],
-              ],
-            ),
-            const SizedBox(height: 16),
-            _Section(
-              title: 'OpenVPN 自定义配置',
-              children: [
-                TextField(
-                  controller: _customDirectives,
-                  minLines: 6,
-                  maxLines: 12,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    hintText: 'verb 3\nnobind\nresolv-retry infinite',
-                  ),
-                ),
-              ],
-            ),
-          ],
           const SizedBox(height: 18),
           Row(
             children: [
@@ -219,8 +199,11 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     );
     final updated = current.copyWith(
       name: _name.text.trim().isEmpty ? current.name : _name.text.trim(),
-      cpeIp: _cpe.text.trim().isEmpty ? current.cpeIp : _cpe.text.trim(),
-      syncDnsWithAcceleration: _syncDns,
+      cpeIp: _remoteHost.text.trim().isEmpty
+          ? current.cpeIp
+          : _remoteHost.text.trim(),
+      syncDnsWithAcceleration: false,
+      mode: AccelerationMode.openVpn,
       openVpn: openVpn,
     );
     final result = await widget.controller.saveProfile(updated);
