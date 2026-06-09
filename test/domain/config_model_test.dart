@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sdwan_client/domain/acceleration_mode.dart';
 import 'package:sdwan_client/domain/app_config.dart';
 import 'package:sdwan_client/domain/sdwan_profile.dart';
 
@@ -33,6 +34,26 @@ void main() {
     });
 
     expect(restored.activeProfile.syncDnsWithAcceleration, isTrue);
+  });
+
+  test('legacy profile migrates to half route mode', () {
+    final restored = AppConfig.fromJson({
+      'activeProfileId': 'default',
+      'profiles': [
+        {
+          'id': 'default',
+          'name': '默认加速配置',
+          'companyName': '',
+          'cpeIp': '192.168.1.140',
+          'primaryDns': '223.5.5.5',
+          'secondaryDns': '114.114.114.114',
+        },
+      ],
+    });
+
+    expect(restored.activeProfile.mode, AccelerationMode.halfRoute);
+    expect(restored.activeProfile.openVpn, isNotNull);
+    expect(restored.activeProfile.cpeIp, '192.168.1.140');
   });
 
   test('serializes and deserializes app config', () {
