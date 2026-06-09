@@ -78,12 +78,14 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
             children: [
               _Field(label: '配置名称', controller: _name),
               _Field(label: 'CPE 地址', controller: _cpe),
-              SwitchListTile(
-                key: const ValueKey('profile-sync-dns-switch'),
-                value: _syncDns,
-                onChanged: (value) => setState(() => _syncDns = value),
-                title: const Text('DNS 跟随 CPE'),
-                subtitle: const Text('开启当前配置时把 IPv4 DNS 临时指向 CPE'),
+              _SwitchTile(
+                child: SwitchListTile(
+                  key: const ValueKey('profile-sync-dns-switch'),
+                  value: _syncDns,
+                  onChanged: (value) => setState(() => _syncDns = value),
+                  title: const Text('DNS 跟随 CPE'),
+                  subtitle: const Text('开启当前配置时把 IPv4 DNS 临时指向 CPE'),
+                ),
               ),
             ],
           ),
@@ -111,19 +113,23 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
                 const SizedBox(height: 12),
                 _Field(label: '服务器地址', controller: _remoteHost),
                 _Field(label: '端口', controller: _remotePort),
-                SwitchListTile(
-                  value: _ipv4Only,
-                  onChanged: (value) => setState(() => _ipv4Only = value),
-                  title: const Text('仅 IPv4'),
-                  subtitle: const Text('忽略 OpenVPN 服务端推送的 IPv6 路由'),
+                _SwitchTile(
+                  child: SwitchListTile(
+                    value: _ipv4Only,
+                    onChanged: (value) => setState(() => _ipv4Only = value),
+                    title: const Text('仅 IPv4'),
+                    subtitle: const Text('忽略 OpenVPN 服务端推送的 IPv6 路由'),
+                  ),
                 ),
-                SwitchListTile(
-                  value: _authUserPass,
-                  onChanged: (value) {
-                    setState(() => _authUserPass = value);
-                  },
-                  title: const Text('需要账号密码'),
-                  subtitle: const Text('密码后续保存到系统安全存储，不进入导出配置'),
+                _SwitchTile(
+                  child: SwitchListTile(
+                    value: _authUserPass,
+                    onChanged: (value) {
+                      setState(() => _authUserPass = value);
+                    },
+                    title: const Text('需要账号密码'),
+                    subtitle: const Text('密码后续保存到系统安全存储，不进入导出配置'),
+                  ),
                 ),
               ],
             ),
@@ -197,6 +203,17 @@ class _ProfileEditorPageState extends State<ProfileEditorPage> {
     if (result.success) {
       Navigator.of(context).maybePop();
     }
+  }
+}
+
+class _SwitchTile extends StatelessWidget {
+  const _SwitchTile({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(type: MaterialType.transparency, child: child);
   }
 }
 
