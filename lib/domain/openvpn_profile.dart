@@ -73,7 +73,7 @@ class OpenVpnProfile {
       ipv4Only: json['ipv4Only'] as bool? ?? true,
       pullFilterIpv6: json['pullFilterIpv6'] as bool? ?? true,
       customDirectives: directives is List
-          ? directives.map((item) => item.toString()).toList()
+          ? _normalizeCustomDirectives(directives)
           : OpenVpnProfile.defaults().customDirectives,
       inlineBlocks: blocks is Map
           ? blocks.map(
@@ -146,10 +146,44 @@ class OpenVpnProfile {
       mssfix: mssfix ?? this.mssfix,
       ipv4Only: ipv4Only ?? this.ipv4Only,
       pullFilterIpv6: pullFilterIpv6 ?? this.pullFilterIpv6,
-      customDirectives: customDirectives ?? this.customDirectives,
+      customDirectives: customDirectives == null
+          ? this.customDirectives
+          : _normalizeCustomDirectives(customDirectives),
       inlineBlocks: inlineBlocks ?? this.inlineBlocks,
     );
   }
 }
 
 const _unset = Object();
+
+List<String> _normalizeCustomDirectives(Iterable<Object?> directives) {
+  final result = <String>[];
+  final seenDnsServers = <String>{};
+  for (final item in directives) {
+    final line = item.toString();
+    final dnsKey = _dnsDirectiveKey(line);
+    if (dnsKey != null && !seenDnsServers.add(dnsKey)) {
+      continue;
+    }
+    result.add(line);
+  }
+  return result;
+}
+
+String? _dnsDirectiveKey(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith(';')) {
+    return null;
+  }
+  final parts = trimmed.split(RegExp(r'\s+'));
+  if (parts.length < 3) {
+    return null;
+  }
+  if (parts[0].toLowerCase() != 'dhcp-option' ||
+      parts[1].toLowerCase() != 'dns') {
+    return null;
+  }
+  return parts[2].toLowerCase();
+}

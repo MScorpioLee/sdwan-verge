@@ -43,6 +43,29 @@ void main() {
     expect(restored.activeProfile.syncDnsWithAcceleration, isFalse);
   });
 
+  test('openvpn profile with stored DNS sync enabled is forced off', () {
+    final restored = AppConfig.fromJson({
+      'activeProfileId': 'vpn',
+      'profiles': [
+        {
+          'id': 'vpn',
+          'name': 'OpenVPN',
+          'mode': 'openvpn',
+          'cpeIp': '192.168.1.140',
+          'syncDnsWithAcceleration': true,
+          'openVpn': {
+            'remoteHost': '192.168.1.140',
+            'remotePort': 10189,
+            'protocol': 'udp4',
+          },
+        },
+      ],
+    });
+
+    expect(restored.activeProfile.mode, AccelerationMode.openVpn);
+    expect(restored.activeProfile.syncDnsWithAcceleration, isFalse);
+  });
+
   test('legacy profile migrates to OpenVPN mode', () {
     final restored = AppConfig.fromJson({
       'activeProfileId': 'default',
@@ -85,7 +108,7 @@ void main() {
     final restored = AppConfig.fromJson(config.toJson());
 
     expect(restored.activeProfile.cpeIp, '10.0.0.1');
-    expect(restored.activeProfile.syncDnsWithAcceleration, isTrue);
+    expect(restored.activeProfile.syncDnsWithAcceleration, isFalse);
     expect(restored.retainTrafficHistory, isTrue);
     expect(restored.latencyTargets, hasLength(1));
     expect(restored.latencyTargets.single.name, 'Docs');

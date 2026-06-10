@@ -82,7 +82,7 @@ class AppConfig {
 
 SdwanProfile _normalizeOpenVpnProfile(SdwanProfile profile) {
   if (profile.mode == AccelerationMode.openVpn) {
-    return profile;
+    return profile.copyWith(syncDnsWithAcceleration: false);
   }
   return profile.copyWith(
     mode: AccelerationMode.openVpn,

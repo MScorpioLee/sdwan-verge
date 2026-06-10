@@ -78,4 +78,22 @@ mssfix 1360
       isNot(contains('mssfix 1360')),
     );
   });
+
+  test('deduplicates repeated dhcp option dns directives', () {
+    const input = '''
+remote 192.168.1.140 10189
+dhcp-option DNS 192.168.1.140
+dhcp-option DNS 192.168.1.140
+dhcp-option DNS 8.8.8.8
+''';
+
+    final result = OvpnParser().parse(input, fallbackName: 'DNS');
+
+    expect(
+      result.profile.openVpn.customDirectives
+          .where((line) => line.startsWith('dhcp-option DNS'))
+          .toList(),
+      ['dhcp-option DNS 192.168.1.140', 'dhcp-option DNS 8.8.8.8'],
+    );
+  });
 }
