@@ -53,6 +53,16 @@ void main() {
     expect(appDelegate, isNot(contains('openVpnUnsupportedStatus')));
   });
 
+  test('macOS runner can install OpenVPN from inside the app', () {
+    final appDelegate = read('macos/Runner/AppDelegate.swift');
+
+    expect(appDelegate, contains('private func installOpenVpnRuntime('));
+    expect(appDelegate, contains('install openvpn'));
+    expect(appDelegate, contains('findHomebrewBinary()'));
+    expect(appDelegate, contains('"permission": "needsHelperInstall"'));
+    expect(appDelegate, contains('请先安装 Homebrew'));
+  });
+
   test('macOS package script reseals app after embedding helper', () {
     final script = read('scripts/package_releases.sh');
 

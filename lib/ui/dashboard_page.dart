@@ -25,6 +25,9 @@ class DashboardPage extends StatelessWidget {
         final status = tunController.status;
         final cpe = status.cpe;
         final running = status.state == TunState.running;
+        final needsOpenVpnInstall =
+            !status.helperInstalled ||
+            status.permission == TunPermission.needsHelperInstall;
         final canStart =
             !tunController.busy &&
             status.permission != TunPermission.unsupported &&
@@ -60,6 +63,7 @@ class DashboardPage extends StatelessWidget {
               busy: tunController.busy,
               stateText: _stateText(status.state),
               subtitle: _stateSubtitle(status.state),
+              needsOpenVpnInstall: needsOpenVpnInstall,
               canStart: canStart,
               onStart: () {
                 tunController.setActiveProfile(profile);
@@ -190,6 +194,7 @@ class _PowerCard extends StatelessWidget {
     required this.busy,
     required this.stateText,
     required this.subtitle,
+    required this.needsOpenVpnInstall,
     required this.canStart,
     required this.onStart,
     required this.onStop,
@@ -199,6 +204,7 @@ class _PowerCard extends StatelessWidget {
   final bool busy;
   final String stateText;
   final String subtitle;
+  final bool needsOpenVpnInstall;
   final bool canStart;
   final VoidCallback onStart;
   final VoidCallback onStop;
@@ -271,6 +277,7 @@ class _PowerCard extends StatelessWidget {
           _PowerButton(
             running: running,
             busy: busy,
+            needsOpenVpnInstall: needsOpenVpnInstall,
             canStart: canStart,
             onStart: onStart,
             onStop: onStop,
@@ -405,6 +412,7 @@ class _PowerButton extends StatelessWidget {
   const _PowerButton({
     required this.running,
     required this.busy,
+    required this.needsOpenVpnInstall,
     required this.canStart,
     required this.onStart,
     required this.onStop,
@@ -412,6 +420,7 @@ class _PowerButton extends StatelessWidget {
 
   final bool running;
   final bool busy;
+  final bool needsOpenVpnInstall;
   final bool canStart;
   final VoidCallback onStart;
   final VoidCallback onStop;
@@ -451,7 +460,9 @@ class _PowerButton extends StatelessWidget {
     return FilledButton(
       onPressed: running ? onStop : (canStart ? onStart : null),
       style: style,
-      child: Text(running ? '关闭' : '开启加速'),
+      child: Text(
+        running ? '关闭' : (needsOpenVpnInstall ? '安装 OpenVPN' : '开启加速'),
+      ),
     );
   }
 }

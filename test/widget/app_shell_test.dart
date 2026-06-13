@@ -222,7 +222,7 @@ void main() {
     expect(find.text('流量统计'), findsOneWidget);
     expect(find.text('上行速率'), findsWidgets);
     expect(find.text('下行速率'), findsWidgets);
-    expect(find.text('开启加速'), findsOneWidget);
+    expect(find.text('安装 OpenVPN'), findsOneWidget);
     // 旧文案不应再出现
     expect(find.text('开启半路由'), findsNothing);
 
@@ -288,6 +288,8 @@ void main() {
     await tester.tap(find.text('帮助'));
     await tester.pumpAndSettle();
     expect(find.text('OpenVPN 加速'), findsOneWidget);
+    expect(find.text('macOS 安装'), findsOneWidget);
+    expect(find.textContaining('SDWAN_OPENVPN_PATH'), findsOneWidget);
     expect(find.text('桌面端'), findsNothing);
     expect(find.text('手机端'), findsNothing);
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
@@ -513,7 +515,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final startButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '开启加速'),
+      find.widgetWithText(FilledButton, '安装 OpenVPN'),
     );
     expect(startButton.onPressed, isNull);
     expect(find.text('不支持'), findsOneWidget);

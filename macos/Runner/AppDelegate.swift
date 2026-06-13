@@ -540,7 +540,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
 
   private func installHelper(_ arguments: Any?) -> [String: Any] {
     if mode(from: arguments) == "openvpn" {
-      return openVpnStatus(arguments: arguments)
+      return installOpenVpnRuntime(arguments: arguments)
     }
     guard bundledHelperPath() != nil else {
       return unsupportedStatus(
@@ -708,7 +708,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
         "host": host,
         "reachable": false,
         "serviceReady": false,
-        "error": "未找到 OpenVPN CLI，请安装 openvpn 或设置 SDWAN_OPENVPN_PATH",
+        "error": "未找到 OpenVPN CLI，请点击安装 OpenVPN，或设置 SDWAN_OPENVPN_PATH",
       ]
     }
     return [
@@ -725,7 +725,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     return [
       "state": state,
       "adapterName": "OpenVPN",
-      "permission": hasBinary ? "ready" : "unsupported",
+      "permission": hasBinary ? "ready" : "needsHelperInstall",
       "helperInstalled": hasBinary,
       "cpe": openVpnHealth(arguments: arguments),
       "txBytes": 0,
@@ -739,7 +739,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "natMisses": 0,
       "sendFailures": 0,
       "udp443Packets": 0,
-      "lastError": error ?? "",
+      "lastError": error ?? (hasBinary ? "" : "未找到 OpenVPN CLI，可点击安装 OpenVPN，或设置 SDWAN_OPENVPN_PATH。"),
     ]
   }
 
@@ -763,7 +763,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       return openVpnStatus(
         arguments: arguments,
         state: "failed",
-        error: "未找到 OpenVPN CLI，请安装 openvpn 或设置 SDWAN_OPENVPN_PATH"
+        error: "OpenVPN 未安装，请先点击安装 OpenVPN，或设置 SDWAN_OPENVPN_PATH"
       )
     }
     do {
@@ -797,6 +797,35 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     }
     try? FileManager.default.removeItem(at: openVpnPidFile())
     try? FileManager.default.removeItem(at: openVpnAuthFile())
+    return openVpnStatus(arguments: arguments, state: "stopped")
+  }
+
+  private func installOpenVpnRuntime(arguments: Any?) -> [String: Any] {
+    if findOpenVpnBinary() != nil {
+      return openVpnStatus(arguments: arguments, state: "stopped")
+    }
+    guard let brew = findHomebrewBinary() else {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: "未找到 Homebrew，无法自动安装 OpenVPN。请先安装 Homebrew：https://brew.sh，或手动安装 openvpn 后设置 SDWAN_OPENVPN_PATH。"
+      )
+    }
+    let run = runShell("\(shellQuote(brew)) install openvpn", timeout: 1800)
+    if run.exitCode != 0 {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: run.output.isEmpty ? "OpenVPN 安装失败，请检查 Homebrew" : run.output
+      )
+    }
+    guard findOpenVpnBinary() != nil else {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: "OpenVPN 安装完成但未找到 openvpn 可执行文件，请设置 SDWAN_OPENVPN_PATH。"
+      )
+    }
     return openVpnStatus(arguments: arguments, state: "stopped")
   }
 
@@ -899,6 +928,14 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "/usr/local/bin/openvpn",
       "/usr/sbin/openvpn",
       "/usr/bin/openvpn",
+    ]
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+  }
+
+  private func findHomebrewBinary() -> String? {
+    let candidates = [
+      "/opt/homebrew/bin/brew",
+      "/usr/local/bin/brew",
     ]
     return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
   }
@@ -1058,6 +1095,16 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "-e",
       "do shell script \"\(appleScriptEscape(command))\" with administrator privileges",
     ]
+    return runProcess(process, timeout: timeout)
+  }
+
+  private func runShell(
+    _ command: String,
+    timeout: TimeInterval
+  ) -> (exitCode: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["-lc", command]
     return runProcess(process, timeout: timeout)
   }
 
