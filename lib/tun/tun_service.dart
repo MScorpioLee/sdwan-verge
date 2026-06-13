@@ -1,11 +1,15 @@
 import 'package:flutter/services.dart';
 
+import '../domain/openvpn_profile.dart';
+import '../domain/sdwan_profile.dart';
+import '../services/credential_store.dart';
 export 'latency_probe.dart';
 
 import 'latency_probe.dart';
 import 'tun_models.dart';
 
 abstract interface class TunService {
+  void updateProfile(SdwanProfile profile);
   void updateCpeHost(String host);
   void updateDnsSync(bool enabled);
   Future<TunStatus> status();
@@ -27,31 +31,53 @@ abstract interface class TunService {
 class MethodChannelTunService implements TunService {
   MethodChannelTunService({
     MethodChannel? channel,
+    CredentialStore? credentialStore,
     LatencyProbeClient? latencyProbeClient,
     String defaultCpeHost = '192.168.1.140',
   }) : _channel = channel ?? const MethodChannel('sdwan_client/tun'),
+       _credentialStore = credentialStore,
        _latencyProbeClient =
            latencyProbeClient ?? const DefaultLatencyProbeClient(),
-       _cpeHost = defaultCpeHost;
+       _cpeHost = defaultCpeHost,
+       _activeProfile = SdwanProfile.defaults().copyWith(
+         cpeIp: defaultCpeHost,
+         openVpn: OpenVpnProfile.defaults().copyWith(
+           remoteHost: defaultCpeHost,
+         ),
+       );
 
   final MethodChannel _channel;
+  final CredentialStore? _credentialStore;
   final LatencyProbeClient _latencyProbeClient;
   String _cpeHost;
   bool _syncDns = false;
+  SdwanProfile _activeProfile;
 
   String get defaultCpeHost => _cpeHost;
+
+  @override
+  void updateProfile(SdwanProfile profile) {
+    _activeProfile = profile;
+    _cpeHost = profile.cpeIp;
+    _syncDns = profile.syncDnsWithAcceleration;
+  }
 
   @override
   void updateCpeHost(String host) {
     final trimmed = host.trim();
     if (trimmed.isNotEmpty) {
       _cpeHost = trimmed;
+      _activeProfile = _activeProfile.copyWith(
+        cpeIp: trimmed,
+        openVpn: _activeProfile.openVpn.copyWith(remoteHost: trimmed),
+      );
     }
   }
 
   @override
   void updateDnsSync(bool enabled) {
     _syncDns = enabled;
+    _activeProfile = _activeProfile.copyWith(syncDnsWithAcceleration: enabled);
   }
 
   @override
@@ -175,7 +201,7 @@ class MethodChannelTunService implements TunService {
     try {
       final result = await _channel.invokeMethod<Object?>(
         'start',
-        _baseArguments(),
+        await _startArguments(),
       );
       return _statusFromMap(result);
     } on MissingPluginException {
@@ -457,10 +483,45 @@ class MethodChannelTunService implements TunService {
     return value;
   }
 
-  Map<String, Object?> _baseArguments() => {
-    'cpeHost': _cpeHost,
-    'syncDns': _syncDns,
-  };
+  Future<Map<String, Object?>> _startArguments() async {
+    final args = _baseArguments();
+    final credentialRef = _activeProfile.openVpn.credentialRef;
+    if (_activeProfile.openVpn.authUserPass &&
+        credentialRef != null &&
+        credentialRef.isNotEmpty) {
+      final credential = await _credentialStore?.read(credentialRef);
+      if (credential != null) {
+        args['openvpnUsername'] = credential.username;
+        args['openvpnPassword'] = credential.password;
+      }
+    }
+    return args;
+  }
+
+  Map<String, Object?> _baseArguments() {
+    final profile = _activeProfile;
+    final openVpn = profile.openVpn;
+    return {
+      'profileId': profile.id,
+      'profileName': profile.name,
+      'mode': profile.mode.json,
+      'cpeHost': _cpeHost,
+      'syncDns': _syncDns,
+      'openvpnRemoteHost': openVpn.remoteHost,
+      'openvpnRemotePort': openVpn.remotePort,
+      'openvpnProtocol': openVpn.protocol.ovpnValue,
+      'openvpnAuthUserPass': openVpn.authUserPass,
+      'openvpnCredentialRef': openVpn.credentialRef,
+      'openvpnRedirectGateway': openVpn.redirectGateway,
+      'openvpnTunName': openVpn.tunName,
+      'openvpnMtu': openVpn.mtu,
+      'openvpnMssfix': openVpn.mssfix,
+      'openvpnIpv4Only': openVpn.ipv4Only,
+      'openvpnPullFilterIpv6': openVpn.pullFilterIpv6,
+      'openvpnCustomDirectives': openVpn.customDirectives,
+      'openvpnInlineBlocks': openVpn.inlineBlocks,
+    };
+  }
 }
 
 bool _isIpv4Endpoint(String endpoint) {

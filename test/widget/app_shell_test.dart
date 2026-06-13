@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sdwan_client/domain/app_config.dart';
+import 'package:sdwan_client/domain/sdwan_profile.dart';
 import 'package:sdwan_client/services/app_config_controller.dart';
 import 'package:sdwan_client/services/config_repository.dart';
 import 'package:sdwan_client/tun/domain_resolver.dart';
@@ -46,7 +47,7 @@ class FakeTunService implements TunService {
   final TrafficStats traffic;
   final List<TunConnection>? customConnectionLogs;
   final List<TunEventLog> eventLogs = const [
-    TunEventLog(time: '2026-06-04 12:00:00', message: '开启半路由'),
+    TunEventLog(time: '2026-06-04 12:00:00', message: 'OpenVPN started'),
     TunEventLog(time: '2026-06-04 12:00:05', message: '自动回退'),
   ];
   List<TunConnection> get connectionLogs {
@@ -82,6 +83,12 @@ class FakeTunService implements TunService {
         dnsRedirect: true,
       ),
     ];
+  }
+
+  @override
+  void updateProfile(SdwanProfile profile) {
+    cpeHost = profile.cpeIp;
+    syncDnsWithAcceleration = profile.syncDnsWithAcceleration;
   }
 
   @override
@@ -182,9 +189,18 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    final configController = AppConfigController(
-      configStore: MemoryConfigStore(),
-    );
+    final configStore = MemoryConfigStore()
+      ..config = AppConfig.defaults().copyWith(
+        latencyTargets: [
+          ...LatencyTarget.defaults,
+          const LatencyTarget(
+            id: 'custom-codex',
+            name: 'Codex',
+            url: 'https://chatgpt.com/',
+          ),
+        ],
+      );
+    final configController = AppConfigController(configStore: configStore);
     final tunController = TunController(service: FakeTunService());
     await configController.initialize();
     await tunController.initialize();
@@ -202,11 +218,11 @@ void main() {
     // 侧边栏品牌 + 仪表盘主卡
     expect(find.text('SD-WAN'), findsOneWidget);
     expect(find.text('国际网络加速'), findsOneWidget);
-    expect(find.text('CPE 网关'), findsOneWidget);
+    expect(find.text('OpenVPN 服务'), findsOneWidget);
     expect(find.text('流量统计'), findsOneWidget);
     expect(find.text('上行速率'), findsWidgets);
     expect(find.text('下行速率'), findsWidgets);
-    expect(find.text('开启加速'), findsOneWidget);
+    expect(find.text('安装 OpenVPN'), findsOneWidget);
     // 旧文案不应再出现
     expect(find.text('开启半路由'), findsNothing);
 
@@ -215,7 +231,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('事件日志'), findsOneWidget);
     expect(find.text('连接统计'), findsNothing);
-    expect(find.text('开启半路由'), findsOneWidget);
+    expect(find.text('OpenVPN started'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('自动回退')).dy -
+          tester.getTopLeft(find.text('OpenVPN started')).dy,
+      lessThan(58),
+    );
 
     // 连接统计独立成页，不混在事件日志里。
     await tester.tap(find.text('连接'));
@@ -236,7 +257,9 @@ void main() {
     await tester.tap(find.text('测速'));
     await tester.pumpAndSettle();
     expect(find.text('网站测速'), findsOneWidget);
+    expect(find.text('添加网站'), findsOneWidget);
     expect(find.text('Cloudflare'), findsOneWidget);
+    expect(find.text('Codex'), findsOneWidget);
     expect(find.text('全部测速'), findsOneWidget);
     await tester.tap(find.text('全部测速'));
     await tester.pumpAndSettle();
@@ -256,21 +279,23 @@ void main() {
     // 点侧边栏「设置」切换页面
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
-    expect(find.text('CPE 地址'), findsOneWidget);
+    expect(find.text('CPE 地址'), findsNothing);
     expect(find.text('公司名称'), findsNothing);
     expect(find.text('保留历史流量统计'), findsOneWidget);
-    expect(find.text('DNS 跟随 CPE'), findsOneWidget);
+    expect(find.text('DNS 跟随 CPE'), findsNothing);
     expect(find.text('开机自动启动'), findsOneWidget);
 
     await tester.tap(find.text('帮助'));
     await tester.pumpAndSettle();
-    expect(find.text('IPv4 半路由模式'), findsOneWidget);
+    expect(find.text('OpenVPN 加速'), findsOneWidget);
+    expect(find.text('macOS 安装'), findsOneWidget);
+    expect(find.textContaining('SDWAN_OPENVPN_PATH'), findsOneWidget);
     expect(find.text('桌面端'), findsNothing);
     expect(find.text('手机端'), findsNothing);
     expect(find.text('OpenWrt/iStoreOS 插件'), findsNothing);
   });
 
-  testWidgets('设置页默认开启 DNS 跟随 CPE 且可关闭保存', (tester) async {
+  testWidgets('配置编辑页不再展示 DNS 跟随 CPE', (tester) async {
     tester.view.physicalSize = const Size(1200, 2200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -298,16 +323,59 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('设置'));
+    await tester.tap(find.text('配置'));
     await tester.pumpAndSettle();
-    expect(service.syncDnsWithAcceleration, isTrue);
-    await tester.tap(find.byKey(const ValueKey('sync-dns-switch')));
+    await tester.tap(find.text('编辑').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '保存配置'));
-    await tester.pumpAndSettle();
-
+    expect(find.text('DNS 跟随 CPE'), findsNothing);
+    expect(find.byKey(const ValueKey('profile-sync-dns-switch')), findsNothing);
     expect(store.config.activeProfile.syncDnsWithAcceleration, isFalse);
     expect(service.syncDnsWithAcceleration, isFalse);
+  });
+
+  testWidgets('测速页可以添加自定义网站', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final configController = AppConfigController(
+      configStore: MemoryConfigStore(),
+    );
+    final tunController = TunController(service: FakeTunService());
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('测速'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('添加网站'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, '名称'), 'Codex');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'URL'),
+      'https://chatgpt.com/',
+    );
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      configController.config.latencyTargets.map((item) => item.name),
+      contains('Codex'),
+    );
+    expect(
+      tunController.latencyTargets.map((item) => item.name),
+      contains('Codex'),
+    );
+    expect(find.text('Codex'), findsOneWidget);
   });
 
   testWidgets('连接页单连接速率缺失时摘要使用接口总速率', (tester) async {
@@ -447,13 +515,13 @@ void main() {
     await tester.pumpAndSettle();
 
     final startButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '开启加速'),
+      find.widgetWithText(FilledButton, '安装 OpenVPN'),
     );
     expect(startButton.onPressed, isNull);
     expect(find.text('不支持'), findsOneWidget);
   });
 
-  testWidgets('首页未安装助手时显示待安装，安装后显示卸载图标', (tester) async {
+  testWidgets('首页未安装 OpenVPN 时显示待安装组件', (tester) async {
     final configController = AppConfigController(
       configStore: MemoryConfigStore(),
     );
@@ -479,13 +547,44 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('待安装助手'), findsOneWidget);
+    expect(find.text('待安装 OpenVPN'), findsOneWidget);
     expect(find.byTooltip('卸载助手'), findsNothing);
 
     await tunController.installHelper();
     await tester.pumpAndSettle();
 
-    expect(find.text('已授权'), findsOneWidget);
-    expect(find.byTooltip('卸载助手'), findsOneWidget);
+    expect(find.text('OpenVPN 就绪'), findsOneWidget);
+    expect(find.byTooltip('卸载助手'), findsNothing);
+  });
+
+  testWidgets('首页 OpenVPN 缺少组件时显示待安装组件', (tester) async {
+    final configController = AppConfigController(
+      configStore: MemoryConfigStore(),
+    );
+    final tunController = TunController(
+      service: FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          adapterName: 'OpenVPN',
+          permission: TunPermission.needsHelperInstall,
+          helperInstalled: false,
+          cpe: const CpeHealth(host: '192.168.1.140', reachable: true),
+        ),
+      ),
+    );
+    await configController.initialize();
+    await tunController.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          configController: configController,
+          tunController: tunController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('待安装 OpenVPN'), findsOneWidget);
+    expect(find.byTooltip('卸载助手'), findsNothing);
   });
 }

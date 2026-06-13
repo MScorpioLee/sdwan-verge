@@ -90,6 +90,14 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+set(BUNDLED_OPENVPN_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openvpn/windows-x64")
+if(EXISTS "${BUNDLED_OPENVPN_DIR}/bin/openvpn.exe")
+  install(DIRECTORY "${BUNDLED_OPENVPN_DIR}/"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}/openvpn"
+    COMPONENT Runtime)
+endif()
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"

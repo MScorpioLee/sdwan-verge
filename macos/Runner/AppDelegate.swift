@@ -8,10 +8,16 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   private let helperName = "sdwan-macos-helper"
   private let installedHelperPath = "/Library/PrivilegedHelperTools/com.sdwan.verge.helper"
   private let launchAgentIdentifier = "com.sdwan.verge.launcher"
+  private let openVpnDirName = "OpenVPN"
   private var tunChannel: FlutterMethodChannel?
   private var statusItem: NSStatusItem?
   private var statusToggleItem: NSMenuItem?
   private var lastCpeHost = "192.168.1.140"
+  private var lastStatusMenuArguments: [String: Any] = [
+    "mode": "openvpn",
+    "cpeHost": "192.168.1.140",
+    "openvpnRemoteHost": "192.168.1.140",
+  ]
   private var didStopAccelerationBeforeExit = false
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
@@ -67,6 +73,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
 
   private func handleTunCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     lastCpeHost = cpeHost(from: call.arguments)
+    rememberStatusMenuArguments(call.arguments, method: call.method)
     switch call.method {
     case "status":
       let status = helperStatus(call.arguments)
@@ -159,7 +166,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       return
     }
     didStopAccelerationBeforeExit = true
-    guard installedHelperAvailable() || isAccelerationRunning(arguments: statusMenuArguments()) else {
+    guard isAccelerationRunning(arguments: statusMenuArguments()) else {
       return
     }
     _ = stopHelper(statusMenuArguments())
@@ -186,7 +193,29 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func statusMenuArguments() -> [String: Any] {
-    ["cpeHost": lastCpeHost]
+    lastStatusMenuArguments
+  }
+
+  private func rememberStatusMenuArguments(_ arguments: Any?, method: String) {
+    var next = arguments as? [String: Any] ?? [:]
+    lastCpeHost = cpeHost(from: next)
+    if mode(from: next) == "openvpn" {
+      next["mode"] = "openvpn"
+      next["cpeHost"] = lastCpeHost
+      if next["openvpnRemoteHost"] == nil {
+        next["openvpnRemoteHost"] = lastCpeHost
+      }
+      if method != "start" {
+        for key in ["openvpnUsername", "openvpnPassword"] where next[key] == nil {
+          if let cached = lastStatusMenuArguments[key] {
+            next[key] = cached
+          }
+        }
+      }
+      lastStatusMenuArguments = next
+      return
+    }
+    lastStatusMenuArguments = ["mode": mode(from: next), "cpeHost": lastCpeHost]
   }
 
   private func isAccelerationRunning(arguments: Any? = nil) -> Bool {
@@ -237,6 +266,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func helperStatus(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnStatus(arguments: arguments)
+    }
     guard helperPath() != nil else {
       return unsupportedStatus(
         message: "macOS helper 未安装",
@@ -273,6 +305,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func helperHealth(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnHealth(arguments: arguments)
+    }
     guard helperPath() != nil else {
       return [
         "host": cpeHost(from: arguments),
@@ -285,6 +320,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func startHelper(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return startOpenVpn(arguments: arguments)
+    }
     guard helperPath() != nil else {
       return unsupportedStatus(
         state: "failed",
@@ -325,6 +363,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func stopHelper(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return stopOpenVpn(arguments: arguments)
+    }
     guard helperPath() != nil else {
       return unsupportedStatus(
         message: "macOS helper 未安装",
@@ -437,6 +478,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func helperLogs(_ arguments: Any?) -> [[String: String]] {
+    if mode(from: arguments) == "openvpn" {
+      return openVpnLogs(limit: logsLimit(from: arguments))
+    }
     let limit = logsLimit(from: arguments)
     let output = runHelper(helperArguments(["logs", "\(limit)"], from: arguments)).output
     return output
@@ -456,6 +500,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func helperConnections(_ arguments: Any?) -> [[String: Any]] {
+    if mode(from: arguments) == "openvpn" {
+      return []
+    }
     let limit = logsLimit(from: arguments)
     let output = runHelper(helperArguments(["connections", "\(limit)"], from: arguments)).output
     return output
@@ -492,6 +539,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func installHelper(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return installOpenVpnRuntime(arguments: arguments)
+    }
     guard bundledHelperPath() != nil else {
       return unsupportedStatus(
         state: "failed",
@@ -513,6 +563,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
   }
 
   private func uninstallHelper(_ arguments: Any?) -> [String: Any] {
+    if mode(from: arguments) == "openvpn" {
+      return stopOpenVpn(arguments: arguments)
+    }
     let run: (exitCode: Int32, output: String)
     if installedHelperAvailable() {
       run = runInstalledHelper(helperArguments(["uninstall"], from: arguments))
@@ -622,6 +675,321 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
     return host.isEmpty ? defaultCpeHost : host
   }
 
+  private func mode(from arguments: Any?) -> String {
+    guard
+      let args = arguments as? [String: Any],
+      let rawMode = args["mode"]
+    else {
+      return "halfRoute"
+    }
+    let normalized = "\(rawMode)"
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+      .replacingOccurrences(of: "_", with: "")
+      .replacingOccurrences(of: "-", with: "")
+    return normalized == "openvpn" ? "openvpn" : "\(rawMode)"
+  }
+
+  private func openVpnRemoteHost(from arguments: Any?) -> String {
+    guard
+      let args = arguments as? [String: Any],
+      let rawHost = args["openvpnRemoteHost"]
+    else {
+      return cpeHost(from: arguments)
+    }
+    let host = "\(rawHost)".trimmingCharacters(in: .whitespacesAndNewlines)
+    return host.isEmpty ? cpeHost(from: arguments) : host
+  }
+
+  private func openVpnHealth(arguments: Any?) -> [String: Any] {
+    let host = openVpnRemoteHost(from: arguments)
+    guard findOpenVpnBinary() != nil else {
+      return [
+        "host": host,
+        "reachable": false,
+        "serviceReady": false,
+        "error": "未找到 OpenVPN CLI，请点击安装 OpenVPN，或设置 SDWAN_OPENVPN_PATH",
+      ]
+    }
+    return [
+      "host": host,
+      "reachable": true,
+      "serviceReady": openVpnPidRunning(),
+    ]
+  }
+
+  private func openVpnStatus(arguments: Any?, state overrideState: String? = nil, error: String? = nil) -> [String: Any] {
+    let hasBinary = findOpenVpnBinary() != nil
+    let running = openVpnPidRunning()
+    let state = overrideState ?? (running ? "running" : "stopped")
+    return [
+      "state": state,
+      "adapterName": "OpenVPN",
+      "permission": hasBinary ? "ready" : "needsHelperInstall",
+      "helperInstalled": hasBinary,
+      "cpe": openVpnHealth(arguments: arguments),
+      "txBytes": 0,
+      "rxBytes": 0,
+      "txRate": 0,
+      "rxRate": 0,
+      "txPackets": 0,
+      "rxPackets": 0,
+      "txDropped": 0,
+      "rxDropped": 0,
+      "natMisses": 0,
+      "sendFailures": 0,
+      "udp443Packets": 0,
+      "lastError": error ?? (hasBinary ? "" : "未找到 OpenVPN CLI，可点击安装 OpenVPN，或设置 SDWAN_OPENVPN_PATH。"),
+    ]
+  }
+
+  private func openVpnLogs(limit: Int) -> [[String: String]] {
+    guard let text = try? String(contentsOf: openVpnLogFile(), encoding: .utf8) else {
+      return []
+    }
+    return text
+      .split(separator: "\n")
+      .suffix(limit)
+      .map { line in
+        [
+          "time": String(Date().description.prefix(19)),
+          "message": String(line),
+        ]
+      }
+  }
+
+  private func startOpenVpn(arguments: Any?) -> [String: Any] {
+    guard let binary = findOpenVpnBinary() else {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: "OpenVPN 未安装，请先点击安装 OpenVPN，或设置 SDWAN_OPENVPN_PATH"
+      )
+    }
+    do {
+      try prepareOpenVpnRuntime(arguments: arguments)
+      let command = [
+        shellQuote(binary),
+        "--config", shellQuote(openVpnConfigFile().path),
+        "--writepid", shellQuote(openVpnPidFile().path),
+        "--log", shellQuote(openVpnLogFile().path),
+        "--status", shellQuote(openVpnStatusFile().path), "10",
+        "--daemon", "sdwan-verge",
+      ].joined(separator: " ")
+      let run = runShellPrivileged(command, timeout: 60)
+      if run.exitCode != 0 {
+        return openVpnStatus(
+          arguments: arguments,
+          state: "failed",
+          error: run.output.isEmpty ? "OpenVPN 启动失败" : run.output
+        )
+      }
+      Thread.sleep(forTimeInterval: 0.8)
+      return openVpnStatus(arguments: arguments, state: openVpnPidRunning() ? "running" : "failed")
+    } catch {
+      return openVpnStatus(arguments: arguments, state: "failed", error: error.localizedDescription)
+    }
+  }
+
+  private func stopOpenVpn(arguments: Any?) -> [String: Any] {
+    if let pid = openVpnPid() {
+      _ = runShellPrivileged("/bin/kill \(pid) 2>/dev/null || true", timeout: 20)
+    }
+    try? FileManager.default.removeItem(at: openVpnPidFile())
+    try? FileManager.default.removeItem(at: openVpnAuthFile())
+    return openVpnStatus(arguments: arguments, state: "stopped")
+  }
+
+  private func installOpenVpnRuntime(arguments: Any?) -> [String: Any] {
+    if findOpenVpnBinary() != nil {
+      return openVpnStatus(arguments: arguments, state: "stopped")
+    }
+    guard let brew = findHomebrewBinary() else {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: "未找到 Homebrew，无法自动安装 OpenVPN。请先安装 Homebrew：https://brew.sh，或手动安装 openvpn 后设置 SDWAN_OPENVPN_PATH。"
+      )
+    }
+    let run = runShell("\(shellQuote(brew)) install openvpn", timeout: 1800)
+    if run.exitCode != 0 {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: run.output.isEmpty ? "OpenVPN 安装失败，请检查 Homebrew" : run.output
+      )
+    }
+    guard findOpenVpnBinary() != nil else {
+      return openVpnStatus(
+        arguments: arguments,
+        state: "failed",
+        error: "OpenVPN 安装完成但未找到 openvpn 可执行文件，请设置 SDWAN_OPENVPN_PATH。"
+      )
+    }
+    return openVpnStatus(arguments: arguments, state: "stopped")
+  }
+
+  private func prepareOpenVpnRuntime(arguments: Any?) throws {
+    try FileManager.default.createDirectory(
+      at: openVpnDirectory(),
+      withIntermediateDirectories: true
+    )
+    if let authText = openVpnAuthText(from: arguments) {
+      try authText.write(to: openVpnAuthFile(), atomically: true, encoding: .utf8)
+      try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: openVpnAuthFile().path
+      )
+    }
+    let config = openVpnConfigText(from: arguments, authFilePath: openVpnAuthFile().path)
+    try config.write(to: openVpnConfigFile(), atomically: true, encoding: .utf8)
+  }
+
+  private func openVpnConfigText(from arguments: Any?, authFilePath: String) -> String {
+    let args = arguments as? [String: Any] ?? [:]
+    var lines: [String] = []
+    lines.append("client")
+    let tunName = "\(args["openvpnTunName"] ?? "auto")"
+    lines.append("dev \(tunName == "auto" ? "tun" : tunName)")
+    lines.append("proto \(args["openvpnProtocol"] ?? "udp4")")
+    lines.append("remote \(openVpnRemoteHost(from: arguments)) \(args["openvpnRemotePort"] ?? 1194)")
+    let redirect = "\(args["openvpnRedirectGateway"] ?? "def1")"
+    if !redirect.isEmpty {
+      lines.append("redirect-gateway \(redirect)")
+    }
+    if boolArg(args["openvpnAuthUserPass"], defaultValue: false) {
+      lines.append("auth-user-pass \(openVpnConfigQuote(authFilePath))")
+    }
+    if boolArg(args["openvpnIpv4Only"], defaultValue: true) {
+      lines.append("pull-filter ignore \"ifconfig-ipv6\"")
+    }
+    if boolArg(args["openvpnPullFilterIpv6"], defaultValue: true) {
+      lines.append("pull-filter ignore \"route-ipv6\"")
+    }
+    let mtu = "\(args["openvpnMtu"] ?? "auto")"
+    if mtu != "auto" {
+      lines.append("tun-mtu \(mtu)")
+    }
+    let mssfix = "\(args["openvpnMssfix"] ?? "auto")"
+    if mssfix != "auto" {
+      lines.append("mssfix \(mssfix)")
+    }
+    if let directives = args["openvpnCustomDirectives"] as? [String] {
+      for directive in directives where !isIgnoredOpenVpnDirectiveOnDarwin(directive) {
+        lines.append(directive)
+      }
+    }
+    if let blocks = args["openvpnInlineBlocks"] as? [String: String] {
+      for (name, content) in blocks {
+        lines.append("<\(name)>")
+        lines.append(content)
+        lines.append("</\(name)>")
+      }
+    }
+    return lines.joined(separator: "\n") + "\n"
+  }
+
+  private func openVpnConfigQuote(_ value: String) -> String {
+    let escaped = value
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    return "\"\(escaped)\""
+  }
+
+  private func isIgnoredOpenVpnDirectiveOnDarwin(_ raw: String) -> Bool {
+    let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if line.isEmpty || line.hasPrefix("#") || line.hasPrefix(";") {
+      return false
+    }
+    let key = line.split { $0 == " " || $0 == "\t" }.first?.lowercased() ?? ""
+    return key == "client" || key == "block-outside-dns"
+  }
+
+  private func openVpnAuthText(from arguments: Any?) -> String? {
+    guard
+      let args = arguments as? [String: Any],
+      let username = args["openvpnUsername"] as? String,
+      let password = args["openvpnPassword"] as? String
+    else {
+      return nil
+    }
+    return "\(username)\n\(password)\n"
+  }
+
+  private func findOpenVpnBinary() -> String? {
+    if let env = ProcessInfo.processInfo.environment["SDWAN_OPENVPN_PATH"],
+       FileManager.default.isExecutableFile(atPath: env) {
+      return env
+    }
+    let candidates = [
+      "/opt/homebrew/sbin/openvpn",
+      "/opt/homebrew/bin/openvpn",
+      "/usr/local/sbin/openvpn",
+      "/usr/local/bin/openvpn",
+      "/usr/sbin/openvpn",
+      "/usr/bin/openvpn",
+    ]
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+  }
+
+  private func findHomebrewBinary() -> String? {
+    let candidates = [
+      "/opt/homebrew/bin/brew",
+      "/usr/local/bin/brew",
+    ]
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+  }
+
+  private func openVpnPidRunning() -> Bool {
+    guard let pid = openVpnPid() else {
+      return false
+    }
+    return kill(pid, 0) == 0
+  }
+
+  private func openVpnPid() -> Int32? {
+    guard let text = try? String(contentsOf: openVpnPidFile(), encoding: .utf8) else {
+      return nil
+    }
+    return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  private func openVpnDirectory() -> URL {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("SD-WAN Verge", isDirectory: true)
+      .appendingPathComponent(openVpnDirName, isDirectory: true)
+  }
+
+  private func openVpnConfigFile() -> URL {
+    openVpnDirectory().appendingPathComponent("client.ovpn")
+  }
+
+  private func openVpnAuthFile() -> URL {
+    openVpnDirectory().appendingPathComponent("auth.txt")
+  }
+
+  private func openVpnPidFile() -> URL {
+    openVpnDirectory().appendingPathComponent("openvpn.pid")
+  }
+
+  private func openVpnLogFile() -> URL {
+    openVpnDirectory().appendingPathComponent("openvpn.log")
+  }
+
+  private func openVpnStatusFile() -> URL {
+    openVpnDirectory().appendingPathComponent("openvpn.status")
+  }
+
+  private func boolArg(_ value: Any?, defaultValue: Bool) -> Bool {
+    if let bool = value as? Bool {
+      return bool
+    }
+    if let string = value as? String {
+      return string == "true"
+    }
+    return defaultValue
+  }
+
   private func helperArguments(_ base: [String], from arguments: Any?) -> [String] {
     return base + ["--cpe", cpeHost(from: arguments)]
   }
@@ -715,6 +1083,29 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate, NSMenuDelegate {
       "do shell script \"\(appleScriptEscape(command))\" with administrator privileges",
     ]
     return runProcess(process, timeout: 180)
+  }
+
+  private func runShellPrivileged(
+    _ command: String,
+    timeout: TimeInterval
+  ) -> (exitCode: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = [
+      "-e",
+      "do shell script \"\(appleScriptEscape(command))\" with administrator privileges",
+    ]
+    return runProcess(process, timeout: timeout)
+  }
+
+  private func runShell(
+    _ command: String,
+    timeout: TimeInterval
+  ) -> (exitCode: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["-lc", command]
+    return runProcess(process, timeout: timeout)
   }
 
   private func runProcess(

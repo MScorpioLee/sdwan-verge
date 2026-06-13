@@ -60,4 +60,23 @@ void main() {
     expect(runner, contains('my_application_shutdown'));
     expect(runner, contains('tray_quit_cb'));
   });
+
+  test('Linux runner starts and stops a real OpenVPN process', () {
+    final runner = read('linux/runner/my_application.cc');
+
+    expect(runner, contains('mode_from_call'));
+    expect(runner, contains('start_openvpn'));
+    expect(runner, contains('stop_openvpn'));
+    expect(runner, contains('openvpn_config_text'));
+    expect(runner, contains('g_string_append(config, "client\\n")'));
+    expect(runner, contains('is_ignored_openvpn_directive_on_linux'));
+    expect(runner, contains('openvpn_config_quote'));
+    expect(runner, contains('find_openvpn_binary'));
+    expect(runner, contains('openvpnInlineBlocks'));
+    expect(runner, contains('--writepid'));
+    expect(runner, contains('--config'));
+    expect(runner, contains('"openvpnRemoteHost"'));
+    expect(runner, contains('"OpenVPN"'));
+    expect(runner, isNot(contains('openvpn_unsupported_status_value')));
+  });
 }

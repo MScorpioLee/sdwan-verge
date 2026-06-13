@@ -118,13 +118,13 @@ class _LogTile extends StatelessWidget {
               ),
             ),
             if (!isLast)
-              Container(width: 1, height: 42, color: AppColors.border),
+              Container(width: 1, height: 24, color: AppColors.border),
           ],
         ),
         const SizedBox(width: 12),
         Expanded(
           child: Padding(
-            padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
+            padding: EdgeInsets.only(bottom: isLast ? 0 : 10),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

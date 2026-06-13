@@ -1,5 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sdwan_client/domain/openvpn_profile.dart';
+import 'package:sdwan_client/domain/sdwan_profile.dart';
+import 'package:sdwan_client/services/credential_store.dart';
 import 'package:sdwan_client/tun/tun_models.dart';
 import 'package:sdwan_client/tun/tun_service.dart';
 
@@ -68,10 +71,9 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'healthCheck');
-          expect(call.arguments, {
-            'cpeHost': '192.168.1.150',
-            'syncDns': false,
-          });
+          final args = call.arguments as Map;
+          expect(args['cpeHost'], '192.168.1.150');
+          expect(args['syncDns'], isFalse);
           return {
             'host': '192.168.1.150',
             'reachable': true,
@@ -91,7 +93,9 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'start');
-          expect(call.arguments, {'cpeHost': '192.168.1.140', 'syncDns': true});
+          final args = call.arguments as Map;
+          expect(args['cpeHost'], '192.168.1.140');
+          expect(args['syncDns'], isTrue);
           return {
             'state': 'running',
             'permission': 'ready',
@@ -109,6 +113,90 @@ void main() {
     final status = await service.start();
 
     expect(status.state, TunState.running);
+  });
+
+  test('start sends active openvpn profile arguments', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return {
+            'state': 'stopped',
+            'mode': 'openvpn',
+            'adapterName': 'OpenVPN',
+            'permission': 'ready',
+            'helperInstalled': true,
+            'cpe': {
+              'host': '192.168.1.140',
+              'reachable': true,
+              'serviceReady': true,
+            },
+          };
+        });
+
+    final service = MethodChannelTunService(channel: channel);
+    service.updateProfile(SdwanProfile.openVpnDefaults());
+    await service.start();
+
+    final args =
+        calls.singleWhere((call) => call.method == 'start').arguments as Map;
+    expect(args['mode'], 'openvpn');
+    expect(args['openvpnProtocol'], 'udp4');
+    expect(args['openvpnRemoteHost'], '192.168.1.140');
+    expect(args['openvpnRemotePort'], 10189);
+  });
+
+  test('start sends openvpn credential only for the start call', () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return {
+            'state': 'running',
+            'mode': 'openvpn',
+            'adapterName': 'OpenVPN',
+            'permission': 'ready',
+            'helperInstalled': true,
+            'cpe': {
+              'host': 'vpn.example.com',
+              'reachable': true,
+              'serviceReady': true,
+            },
+          };
+        });
+
+    final service = MethodChannelTunService(
+      channel: channel,
+      credentialStore: _FakeCredentialStore(
+        const OpenVpnCredential(username: 'alice', password: 'secret'),
+      ),
+    );
+    service.updateProfile(
+      SdwanProfile.openVpnDefaults().copyWith(
+        openVpn: OpenVpnProfile.defaults().copyWith(
+          remoteHost: 'vpn.example.com',
+          credentialRef: 'profile-1',
+        ),
+      ),
+    );
+
+    await service.status();
+    await service.start();
+
+    final statusArgs =
+        calls.singleWhere((call) => call.method == 'status').arguments as Map;
+    expect(statusArgs.containsKey('openvpnUsername'), isFalse);
+    expect(statusArgs.containsKey('openvpnPassword'), isFalse);
+    final startArgs =
+        calls.singleWhere((call) => call.method == 'start').arguments as Map;
+    expect(startArgs['openvpnUsername'], 'alice');
+    expect(startArgs['openvpnPassword'], 'secret');
+    expect(startArgs['openvpnRedirectGateway'], 'def1');
+    expect(startArgs['openvpnTunName'], 'auto');
+    expect(startArgs['openvpnMtu'], '1392');
+    expect(startArgs['openvpnMssfix'], 'auto');
+    expect(startArgs['openvpnPullFilterIpv6'], isTrue);
+    expect(startArgs['openvpnInlineBlocks'], isA<Map>());
   });
 
   test('treats stale auto recovery as stopped when CPE is healthy', () async {
@@ -140,11 +228,10 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'connections');
-          expect(call.arguments, {
-            'limit': 1,
-            'cpeHost': '192.168.1.140',
-            'syncDns': false,
-          });
+          final args = call.arguments as Map;
+          expect(args['limit'], 1);
+          expect(args['cpeHost'], '192.168.1.140');
+          expect(args['syncDns'], isFalse);
           return [
             {
               'lastSeen': '1717473607',
@@ -250,11 +337,10 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           expect(call.method, 'logs');
-          expect(call.arguments, {
-            'limit': 2,
-            'cpeHost': '192.168.1.140',
-            'syncDns': false,
-          });
+          final args = call.arguments as Map;
+          expect(args['limit'], 2);
+          expect(args['cpeHost'], '192.168.1.140');
+          expect(args['syncDns'], isFalse);
           return [
             {'time': '2026-06-04 12:00:00', 'message': '开启半路由'},
             {'time': '', 'message': ''},
@@ -278,18 +364,16 @@ void main() {
         .setMockMethodCallHandler(channel, (call) async {
           calls.add(call.method);
           if (call.method == 'launchAtLoginStatus') {
-            expect(call.arguments, {
-              'cpeHost': '192.168.1.140',
-              'syncDns': false,
-            });
+            final args = call.arguments as Map;
+            expect(args['cpeHost'], '192.168.1.140');
+            expect(args['syncDns'], isFalse);
             return true;
           }
           if (call.method == 'setLaunchAtLogin') {
-            expect(call.arguments, {
-              'enabled': false,
-              'cpeHost': '192.168.1.140',
-              'syncDns': false,
-            });
+            final args = call.arguments as Map;
+            expect(args['enabled'], isFalse);
+            expect(args['cpeHost'], '192.168.1.140');
+            expect(args['syncDns'], isFalse);
             return false;
           }
           fail('unexpected method ${call.method}');
@@ -307,14 +391,13 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
             expect(call.method, 'probeLatency');
-            expect(call.arguments, {
-              'id': 'cloudflare',
-              'name': 'Cloudflare',
-              'url': 'http://cp.cloudflare.com/generate_204',
-              'timeoutMs': 5000,
-              'cpeHost': '192.168.1.140',
-              'syncDns': false,
-            });
+            final args = call.arguments as Map;
+            expect(args['id'], 'cloudflare');
+            expect(args['name'], 'Cloudflare');
+            expect(args['url'], 'http://cp.cloudflare.com/generate_204');
+            expect(args['timeoutMs'], 5000);
+            expect(args['cpeHost'], '192.168.1.140');
+            expect(args['syncDns'], isFalse);
             return {
               'status': 'success',
               'latencyMs': 123,
@@ -341,4 +424,19 @@ void main() {
       expect(status.lastError, contains('TUN'));
     },
   );
+}
+
+class _FakeCredentialStore implements CredentialStore {
+  const _FakeCredentialStore(this.credential);
+
+  final OpenVpnCredential? credential;
+
+  @override
+  Future<void> delete(String ref) async {}
+
+  @override
+  Future<OpenVpnCredential?> read(String ref) async => credential;
+
+  @override
+  Future<void> save(String ref, OpenVpnCredential credential) async {}
 }

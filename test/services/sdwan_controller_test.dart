@@ -111,10 +111,14 @@ void main() {
     await controller.initialize();
 
     final result = await controller.saveProfile(
-      controller.config.activeProfile.copyWith(cpeIp: 'bad'),
+      controller.config.activeProfile.copyWith(
+        openVpn: controller.config.activeProfile.openVpn.copyWith(
+          remotePort: 70000,
+        ),
+      ),
     );
 
     expect(result.success, isFalse);
-    expect(result.message, contains('CPE 网关地址格式不正确'));
+    expect(result.message, contains('OpenVPN 端口必须在 1-65535 之间'));
   });
 }

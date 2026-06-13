@@ -27,20 +27,29 @@ append_dns_server() {
         DNS_SERVERS="$DNS_SERVERS $1"
 }
 
+append_latency_target() {
+        LATENCY_TARGETS="$LATENCY_TARGETS $1"
+}
+
 load_settings() {
         CPE_GATEWAY=192.168.1.140
         ENABLED=0
         SYNC_DNS=1
         DNS_SERVERS=
+        LATENCY_TARGETS=
 
         config_load "$CONFIG"
         config_get CPE_GATEWAY "$SECTION" cpe_gateway "$CPE_GATEWAY"
         config_get_bool ENABLED "$SECTION" enabled "$ENABLED"
         config_get_bool SYNC_DNS "$SECTION" sync_dns "$SYNC_DNS"
         config_list_foreach "$SECTION" dns_server append_dns_server
+        config_list_foreach "$SECTION" latency_target append_latency_target
 
         if [ -z "$DNS_SERVERS" ]; then
                 DNS_SERVERS="223.5.5.5 114.114.114.114"
+        fi
+        if [ -z "$LATENCY_TARGETS" ]; then
+                LATENCY_TARGETS="Cloudflare|http://cp.cloudflare.com/generate_204 Google|https://www.google.com/generate_204 GitHub|https://github.com/favicon.ico"
         fi
 }
 
@@ -64,6 +73,13 @@ validate_settings() {
 
         for server in $DNS_SERVERS; do
                 is_ipv4 "$server" || die "invalid DNS server: $server"
+        done
+        for target in $LATENCY_TARGETS; do
+                url="${target#*|}"
+                case "$url" in
+                        http://*|https://*) ;;
+                        *) die "invalid latency target URL: $target" ;;
+                esac
         done
 }
 
@@ -244,6 +260,44 @@ show_logs() {
         fi
 }
 
+test_site_with_curl() {
+        name="$1"
+        url="$2"
+        total="$(curl -L -o /dev/null -s -w '%{time_total}' --connect-timeout 5 --max-time 8 "$url" 2>/dev/null)" || return 1
+        ms="$(awk "BEGIN { printf \"%d\", $total * 1000 }" 2>/dev/null)" || return 1
+        printf '%s %s ms %s\n' "$name" "$ms" "$url"
+}
+
+test_site_with_wget() {
+        name="$1"
+        url="$2"
+        start="$(date +%s)"
+        wget -q -T 8 -O /dev/null "$url" 2>/dev/null || return 1
+        end="$(date +%s)"
+        printf '%s %s ms %s\n' "$name" "$(( (end - start) * 1000 ))" "$url"
+}
+
+test_sites() {
+        load_settings
+        validate_settings
+        if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+                die "missing curl or wget command"
+        fi
+
+        for target in $LATENCY_TARGETS; do
+                name="${target%%|*}"
+                url="${target#*|}"
+                if [ "$name" = "$url" ]; then
+                        name="$url"
+                fi
+                if command -v curl >/dev/null 2>&1; then
+                        test_site_with_curl "$name" "$url" || printf '%s timeout %s\n' "$name" "$url"
+                else
+                        test_site_with_wget "$name" "$url" || printf '%s timeout %s\n' "$name" "$url"
+                fi
+        done
+}
+
 usage() {
         cat <<'EOF'
 Usage: sdwan-verge-core <command>
@@ -256,6 +310,7 @@ Commands:
   set-dns      Apply configured DNS only.
   restore-dns  Restore backed-up DNS only.
   logs         Print runtime logs.
+  test-sites   Test configured latency targets.
   doctor       Check dependencies and config.
 EOF
 }
@@ -286,6 +341,9 @@ case "${1:-}" in
                 ;;
         logs)
                 show_logs
+                ;;
+        test-sites)
+                test_sites
                 ;;
         doctor)
                 doctor

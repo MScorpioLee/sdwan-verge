@@ -214,6 +214,14 @@ class LatencyTarget {
     required this.url,
   });
 
+  factory LatencyTarget.fromJson(Map<String, Object?> json) {
+    return LatencyTarget(
+      id: (json['id'] as String? ?? '').trim(),
+      name: (json['name'] as String? ?? '').trim(),
+      url: (json['url'] as String? ?? '').trim(),
+    );
+  }
+
   final String id;
   final String name;
   final String url;
@@ -249,7 +257,32 @@ class LatencyTarget {
       name: 'Apple',
       url: 'https://www.apple.com/library/test/success.html',
     ),
+    LatencyTarget(id: 'claude', name: 'Claude', url: 'https://claude.ai/'),
+    LatencyTarget(
+      id: 'amazon',
+      name: 'Amazon',
+      url: 'https://www.amazon.com/favicon.ico',
+    ),
   ];
+
+  bool get isValid {
+    final uri = Uri.tryParse(url);
+    return id.isNotEmpty &&
+        name.isNotEmpty &&
+        uri != null &&
+        uri.hasAuthority &&
+        (uri.scheme == 'http' || uri.scheme == 'https');
+  }
+
+  Map<String, Object?> toJson() => {'id': id, 'name': name, 'url': url};
+
+  LatencyTarget copyWith({String? id, String? name, String? url}) {
+    return LatencyTarget(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      url: url ?? this.url,
+    );
+  }
 
   @override
   bool operator ==(Object other) {
@@ -417,7 +450,7 @@ class CpeHealth {
 class TunStatus {
   const TunStatus({
     required this.mode,
-    this.adapterName = '半路由',
+    this.adapterName = 'OpenVPN',
     required this.state,
     required this.permission,
     required this.cpe,
@@ -430,7 +463,7 @@ class TunStatus {
   factory TunStatus.defaults({String cpeHost = '192.168.1.140'}) {
     return TunStatus(
       mode: TunMode.tun,
-      adapterName: '半路由',
+      adapterName: 'OpenVPN',
       state: TunState.stopped,
       permission: TunPermission.needsVpnConsent,
       cpe: CpeHealth(host: cpeHost, reachable: false),

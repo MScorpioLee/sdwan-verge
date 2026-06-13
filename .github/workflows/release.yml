@@ -111,7 +111,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -137,6 +137,8 @@ jobs:
           cache: false
       - run: flutter --version
       - run: flutter pub get
+      - shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_windows_openvpn_runtime.ps1
       - run: flutter build windows --release
       - shell: pwsh
         run: |

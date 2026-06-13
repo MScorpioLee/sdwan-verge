@@ -193,8 +193,8 @@ class _SummaryRow extends StatelessWidget {
     );
     final txRate = connectionTxRate > 0 ? connectionTxRate : traffic.txRate;
     final rxRate = connectionRxRate > 0 ? connectionRxRate : traffic.rxRate;
-    final dnsCount = connections
-        .where((connection) => connection.dnsRedirect)
+    final udpCount = connections
+        .where((connection) => connection.proto.toUpperCase() == 'UDP')
         .length;
 
     return Row(
@@ -205,7 +205,7 @@ class _SummaryRow extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: _MetricCard(label: 'DNS 到 CPE', value: '$dnsCount'),
+          child: _MetricCard(label: 'UDP 连接', value: '$udpCount'),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -353,10 +353,14 @@ class _BandwidthChartCardState extends State<_BandwidthChartCard> {
           const SizedBox(height: 8),
           Row(
             children: [
-              const Icon(Icons.hub_rounded, size: 16, color: AppColors.primary),
+              const Icon(
+                Icons.vpn_lock_rounded,
+                size: 16,
+                color: AppColors.primary,
+              ),
               const SizedBox(width: 6),
               Text(
-                'CPE ${widget.cpeHost}',
+                'OpenVPN ${widget.cpeHost}',
                 style: const TextStyle(
                   fontSize: 12,
                   color: AppColors.textPrimary,
@@ -365,7 +369,7 @@ class _BandwidthChartCardState extends State<_BandwidthChartCard> {
               ),
               const SizedBox(width: 6),
               const Text(
-                'TUN',
+                'IPv4',
                 style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
             ],
@@ -1116,7 +1120,7 @@ class _ConnectionTile extends StatelessWidget {
       detailParts.add('出口 $via');
     }
     if (connection.dnsRedirect) {
-      detailParts.add('DNS->CPE');
+      detailParts.add('DNS');
     }
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 10),

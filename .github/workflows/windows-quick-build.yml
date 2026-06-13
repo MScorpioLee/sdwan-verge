@@ -9,6 +9,7 @@ on:
       - 'lib/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
+      - 'scripts/prepare_windows_openvpn_runtime.ps1'
       - 'scripts/package_releases.sh'
 
 concurrency:
@@ -26,6 +27,8 @@ jobs:
           cache: false
       - run: flutter --version
       - run: flutter pub get
+      - shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_windows_openvpn_runtime.ps1
       - run: flutter build windows --release
       - shell: pwsh
         run: |

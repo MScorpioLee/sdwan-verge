@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import '../domain/sdwan_profile.dart';
 import 'domain_resolver.dart';
 import 'traffic_history_store.dart';
 import 'tun_models.dart';
@@ -14,6 +15,7 @@ class TunController extends ChangeNotifier {
     TrafficHistoryStore? trafficHistoryStore,
     DomainResolver? domainResolver,
     LatencyProbeClient? latencyProbeClient,
+    List<LatencyTarget>? latencyTargets,
     bool retainTrafficHistory = false,
     this.failureThreshold = 3,
     this.pollInterval = const Duration(seconds: 5),
@@ -23,7 +25,12 @@ class TunController extends ChangeNotifier {
        _latencyProbeClient =
            latencyProbeClient ?? _TunServiceLatencyProbeClient(service),
        _trafficHistoryStore = trafficHistoryStore,
-       _retainTrafficHistory = retainTrafficHistory;
+       _retainTrafficHistory = retainTrafficHistory,
+       _latencyTargets = List.of(latencyTargets ?? LatencyTarget.defaults),
+       _latencyResults = [
+         for (final target in latencyTargets ?? LatencyTarget.defaults)
+           LatencyProbeResult.idle(target: target),
+       ];
 
   final TunService _service;
   final DomainResolver _domainResolver;
@@ -50,11 +57,8 @@ class TunController extends ChangeNotifier {
   final Map<String, _ConnectionBaseline> _connectionBaselines = {};
   final Map<String, String> _domainCache = {};
   final Set<String> _domainLookupsInFlight = {};
-  final List<LatencyTarget> _latencyTargets = LatencyTarget.defaults;
-  List<LatencyProbeResult> _latencyResults = [
-    for (final target in LatencyTarget.defaults)
-      LatencyProbeResult.idle(target: target),
-  ];
+  List<LatencyTarget> _latencyTargets;
+  List<LatencyProbeResult> _latencyResults;
   var _latencyTesting = false;
 
   TunStatus get status => _status;
@@ -68,6 +72,26 @@ class TunController extends ChangeNotifier {
   bool get launchAtLogin => _launchAtLogin;
   bool get busy => _busy;
   bool get latencyTesting => _latencyTesting;
+
+  void setActiveProfile(SdwanProfile profile) {
+    _service.updateProfile(profile);
+  }
+
+  void setLatencyTargets(List<LatencyTarget> targets) {
+    final nextTargets = targets.isEmpty ? LatencyTarget.defaults : targets;
+    if (_sameLatencyTargets(_latencyTargets, nextTargets)) {
+      return;
+    }
+    final resultsById = {
+      for (final result in _latencyResults) result.target.id: result,
+    };
+    _latencyTargets = List.of(nextTargets);
+    _latencyResults = [
+      for (final target in _latencyTargets)
+        resultsById[target.id] ?? LatencyProbeResult.idle(target: target),
+    ];
+    notifyListeners();
+  }
 
   Future<void> initialize() async {
     await _runBusy(() async {
@@ -157,7 +181,7 @@ class TunController extends ChangeNotifier {
         if (!_status.helperInstalled) {
           _status = _status.copyWith(
             state: TunState.failed,
-            lastError: _status.lastError ?? '半路由服务未安装，无法开启加速',
+            lastError: _status.lastError ?? 'OpenVPN 组件未安装，无法开启加速',
           );
           _stopPolling();
           return;
@@ -170,7 +194,7 @@ class TunController extends ChangeNotifier {
         _status = _status.copyWith(
           state: TunState.failed,
           cpe: health,
-          lastError: health.error ?? 'CPE 连接失败，未启动 TUN',
+          lastError: health.error ?? 'OpenVPN 服务检测失败，未启动加速',
         );
         _stopPolling();
         return;
@@ -183,7 +207,7 @@ class TunController extends ChangeNotifier {
           permission: _status.permission,
           cpe: health,
           helperInstalled: _status.helperInstalled,
-          lastError: 'TUN 启动超时，请先停止或卸载助手后重试',
+          lastError: 'OpenVPN 启动超时，请先停止后台连接后重试',
         ),
       );
       if (started.state == TunState.failed) {
@@ -307,7 +331,6 @@ class TunController extends ChangeNotifier {
       _consecutiveFailures = 0;
       _status = _withDisplayTraffic(await _service.status());
       _recordTrafficSample(_status.traffic);
-      await refreshConnections();
       notifyListeners();
       return;
     }
@@ -608,4 +631,16 @@ bool _looksLikeIpAddress(String host) {
     });
   }
   return host.contains(':') && RegExp(r'^[0-9a-fA-F:]+$').hasMatch(host);
+}
+
+bool _sameLatencyTargets(List<LatencyTarget> a, List<LatencyTarget> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }

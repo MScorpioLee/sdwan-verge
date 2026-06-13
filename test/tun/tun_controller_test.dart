@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sdwan_client/domain/sdwan_profile.dart';
 import 'package:sdwan_client/tun/domain_resolver.dart';
 import 'package:sdwan_client/tun/tun_controller.dart';
 import 'package:sdwan_client/tun/traffic_history_store.dart';
@@ -30,6 +31,13 @@ class FakeTunService implements TunService {
   bool syncDnsWithAcceleration = false;
   TunStatus? currentStatus;
   final calls = <String>[];
+
+  @override
+  void updateProfile(SdwanProfile profile) {
+    calls.add('updateProfile:${profile.id}');
+    cpeHost = profile.cpeIp;
+    syncDnsWithAcceleration = profile.syncDnsWithAcceleration;
+  }
 
   @override
   void updateDnsSync(bool enabled) {
@@ -285,7 +293,7 @@ void main() {
   });
 
   test(
-    'start fails without calling service start when CPE is unreachable',
+    'start fails without calling service start when OpenVPN health is unreachable',
     () async {
       final service = FakeTunService(
         health: const CpeHealth(host: '192.168.1.140', reachable: false),
@@ -297,7 +305,7 @@ void main() {
 
       expect(service.calls, ['status', 'installHelper', 'healthCheck']);
       expect(controller.status.state, TunState.failed);
-      expect(controller.status.lastError, contains('CPE'));
+      expect(controller.status.lastError, contains('OpenVPN 服务检测失败'));
     },
   );
 
@@ -349,6 +357,29 @@ void main() {
     expect(controller.status.cpe.reachable, isFalse);
     expect(controller.status.lastError, contains('CPE'));
   });
+
+  test(
+    'health monitor does not refresh expensive connection diagnostics',
+    () async {
+      final service = FakeTunService(
+        currentStatus: TunStatus.defaults().copyWith(
+          state: TunState.running,
+          permission: TunPermission.ready,
+          cpe: const CpeHealth(
+            host: '192.168.1.140',
+            reachable: true,
+            serviceReady: true,
+          ),
+        ),
+      );
+      final controller = TunController(service: service);
+      await controller.initialize();
+
+      await controller.checkHealthOnce();
+
+      expect(service.calls, ['status', 'healthCheck', 'status']);
+    },
+  );
 
   test(
     'changing CPE host re-runs health and status with new address',
@@ -428,6 +459,50 @@ void main() {
     expect(controller.latencyResults, hasLength(LatencyTarget.defaults.length));
     expect(controller.latencyResults.first.latencyMs, 123);
     expect(controller.trafficSamples.last.rttMs, 123);
+  });
+
+  test('uses configured latency targets and can update them live', () async {
+    const firstTarget = LatencyTarget(
+      id: 'custom-one',
+      name: 'Custom One',
+      url: 'https://one.example.com',
+    );
+    const secondTarget = LatencyTarget(
+      id: 'custom-two',
+      name: 'Custom Two',
+      url: 'https://two.example.com',
+    );
+    final service = FakeTunService();
+    final latency = FakeLatencyProbeClient({
+      firstTarget.id: LatencyProbeResult.success(
+        target: firstTarget,
+        latencyMs: 88,
+        checkedAt: DateTime(2026, 6, 4, 12),
+      ),
+      secondTarget.id: LatencyProbeResult.success(
+        target: secondTarget,
+        latencyMs: 188,
+        checkedAt: DateTime(2026, 6, 4, 12),
+      ),
+    });
+    final controller = TunController(
+      service: service,
+      latencyProbeClient: latency,
+      latencyTargets: const [firstTarget],
+    );
+
+    expect(controller.latencyTargets, const [firstTarget]);
+
+    await controller.testAllLatencyTargets();
+    expect(controller.latencyResults.single.latencyMs, 88);
+
+    controller.setLatencyTargets(const [secondTarget]);
+
+    expect(controller.latencyTargets, const [secondTarget]);
+    expect(controller.latencyResults.single.status, LatencyProbeStatus.idle);
+
+    await controller.testAllLatencyTargets();
+    expect(controller.latencyResults.single.latencyMs, 188);
   });
 
   test('records bandwidth samples when status is refreshed', () async {

@@ -1,3 +1,6 @@
+import 'acceleration_mode.dart';
+import 'openvpn_profile.dart';
+
 class SdwanProfile {
   const SdwanProfile({
     required this.id,
@@ -7,16 +10,26 @@ class SdwanProfile {
     required this.primaryDns,
     required this.secondaryDns,
     required this.syncDnsWithAcceleration,
+    required this.mode,
+    required this.openVpn,
   });
 
-  factory SdwanProfile.defaults() => const SdwanProfile(
+  factory SdwanProfile.defaults() => SdwanProfile(
     id: 'default',
-    name: '默认加速配置',
+    name: 'OpenVPN UDP',
     companyName: '',
     cpeIp: '192.168.1.140',
     primaryDns: '223.5.5.5',
     secondaryDns: '114.114.114.114',
-    syncDnsWithAcceleration: true,
+    syncDnsWithAcceleration: false,
+    mode: AccelerationMode.openVpn,
+    openVpn: OpenVpnProfile.defaults(),
+  );
+
+  factory SdwanProfile.openVpnDefaults() => SdwanProfile.defaults().copyWith(
+    id: 'openvpn-default',
+    name: 'OpenVPN UDP',
+    mode: AccelerationMode.openVpn,
   );
 
   factory SdwanProfile.fromJson(Map<String, Object?> json) => SdwanProfile(
@@ -26,7 +39,9 @@ class SdwanProfile {
     cpeIp: json['cpeIp'] as String? ?? '192.168.1.140',
     primaryDns: json['primaryDns'] as String? ?? '223.5.5.5',
     secondaryDns: json['secondaryDns'] as String? ?? '114.114.114.114',
-    syncDnsWithAcceleration: json['syncDnsWithAcceleration'] as bool? ?? true,
+    syncDnsWithAcceleration: json['syncDnsWithAcceleration'] as bool? ?? false,
+    mode: AccelerationMode.fromJson(json['mode']),
+    openVpn: _openVpnFromJson(json['openVpn']),
   );
 
   final String id;
@@ -36,6 +51,8 @@ class SdwanProfile {
   final String primaryDns;
   final String secondaryDns;
   final bool syncDnsWithAcceleration;
+  final AccelerationMode mode;
+  final OpenVpnProfile openVpn;
 
   Map<String, Object?> toJson() => {
     'id': id,
@@ -45,6 +62,8 @@ class SdwanProfile {
     'primaryDns': primaryDns,
     'secondaryDns': secondaryDns,
     'syncDnsWithAcceleration': syncDnsWithAcceleration,
+    'mode': mode.json,
+    'openVpn': openVpn.toJson(),
   };
 
   SdwanProfile copyWith({
@@ -55,6 +74,8 @@ class SdwanProfile {
     String? primaryDns,
     String? secondaryDns,
     bool? syncDnsWithAcceleration,
+    AccelerationMode? mode,
+    OpenVpnProfile? openVpn,
   }) {
     return SdwanProfile(
       id: id ?? this.id,
@@ -65,6 +86,18 @@ class SdwanProfile {
       secondaryDns: secondaryDns ?? this.secondaryDns,
       syncDnsWithAcceleration:
           syncDnsWithAcceleration ?? this.syncDnsWithAcceleration,
+      mode: mode ?? this.mode,
+      openVpn: openVpn ?? this.openVpn,
     );
   }
+}
+
+OpenVpnProfile _openVpnFromJson(Object? value) {
+  if (value is Map<String, Object?>) {
+    return OpenVpnProfile.fromJson(value);
+  }
+  if (value is Map) {
+    return OpenVpnProfile.fromJson(Map<String, Object?>.from(value));
+  }
+  return OpenVpnProfile.defaults();
 }

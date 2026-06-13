@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/app_config_controller.dart';
+import '../services/credential_store.dart';
 import '../tun/tun_controller.dart';
 import '../tun/tun_models.dart';
 import 'connections_page.dart';
@@ -8,6 +9,7 @@ import 'dashboard_page.dart';
 import 'help_page.dart';
 import 'latency_page.dart';
 import 'logs_page.dart';
+import 'profiles_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
 
@@ -16,10 +18,12 @@ class AppShell extends StatefulWidget {
     super.key,
     required this.configController,
     required this.tunController,
+    this.credentialStore,
   });
 
   final AppConfigController configController;
   final TunController tunController;
+  final CredentialStore? credentialStore;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -30,6 +34,7 @@ class _AppShellState extends State<AppShell> {
 
   static const _items = [
     _NavMeta('仪表盘', Icons.dashboard_rounded),
+    _NavMeta('配置', Icons.folder_copy_rounded),
     _NavMeta('连接', Icons.hub_rounded),
     _NavMeta('测速', Icons.speed_rounded),
     _NavMeta('日志', Icons.receipt_long_rounded),
@@ -38,14 +43,50 @@ class _AppShellState extends State<AppShell> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    widget.configController.addListener(_syncLatencyTargets);
+    _syncLatencyTargets();
+  }
+
+  @override
+  void didUpdateWidget(covariant AppShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.configController != widget.configController) {
+      oldWidget.configController.removeListener(_syncLatencyTargets);
+      widget.configController.addListener(_syncLatencyTargets);
+      _syncLatencyTargets();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.configController.removeListener(_syncLatencyTargets);
+    super.dispose();
+  }
+
+  void _syncLatencyTargets() {
+    widget.tunController.setLatencyTargets(
+      widget.configController.config.latencyTargets,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     final pages = [
       DashboardPage(
         configController: widget.configController,
         tunController: widget.tunController,
       ),
+      ProfilesPage(
+        controller: widget.configController,
+        credentialStore: widget.credentialStore,
+      ),
       ConnectionsPage(tunController: widget.tunController),
-      LatencyPage(tunController: widget.tunController),
+      LatencyPage(
+        configController: widget.configController,
+        tunController: widget.tunController,
+      ),
       LogsPage(tunController: widget.tunController),
       SettingsPage(
         controller: widget.configController,
