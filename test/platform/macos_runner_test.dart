@@ -52,4 +52,28 @@ void main() {
     expect(appDelegate, contains('"OpenVPN"'));
     expect(appDelegate, isNot(contains('openVpnUnsupportedStatus')));
   });
+
+  test('macOS package script reseals app after embedding helper', () {
+    final script = read('scripts/package_releases.sh');
+
+    final copyHelper = script.indexOf(
+      r'cp "$helper_path" "$app_path/Contents/Resources/sdwan-macos-helper"',
+    );
+    final signHelper = script.indexOf(
+      r'codesign --force --sign - "$app_path/Contents/Resources/sdwan-macos-helper"',
+    );
+    final signApp = script.indexOf(
+      r'codesign --force --deep --sign - "$app_path"',
+    );
+    final verifyApp = script.indexOf(
+      r'codesign --verify --deep --strict "$app_path"',
+    );
+    final createDmg = script.indexOf('hdiutil create');
+
+    expect(copyHelper, isNonNegative);
+    expect(signHelper, greaterThan(copyHelper));
+    expect(signApp, greaterThan(signHelper));
+    expect(verifyApp, greaterThan(signApp));
+    expect(createDmg, greaterThan(verifyApp));
+  });
 }
